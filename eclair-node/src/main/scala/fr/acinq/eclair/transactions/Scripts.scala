@@ -2,7 +2,7 @@ package fr.acinq.eclair.transactions
 
 import fr.acinq.bitcoin.Crypto.{PrivateKey, PublicKey, ripemd160}
 import fr.acinq.bitcoin.Script._
-import fr.acinq.bitcoin.{BinaryData, Crypto, LexicographicalOrdering, LockTimeThreshold, OP_0, OP_2, OP_2DROP, OP_ADD, OP_CHECKLOCKTIMEVERIFY, OP_CHECKMULTISIG, OP_CHECKSEQUENCEVERIFY, OP_CHECKSIG, OP_DROP, OP_DUP, OP_ELSE, OP_ENDIF, OP_EQUAL, OP_EQUALVERIFY, OP_HASH160, OP_IF, OP_NOTIF, OP_PUSHDATA, OP_SIZE, OP_SWAP, OutPoint, Protocol, SIGHASH_ALL, Satoshi, Script, ScriptElt, ScriptWitness, Transaction, TxIn, TxOut}
+import fr.acinq.bitcoin.{BinaryData, Crypto, LexicographicalOrdering, LockTimeThreshold, OP_0, OP_2, OP_2DROP, OP_3, OP_ADD, OP_CHECKLOCKTIMEVERIFY, OP_CHECKMULTISIG, OP_CHECKSEQUENCEVERIFY, OP_CHECKSIG, OP_DROP, OP_DUP, OP_ELSE, OP_ENDIF, OP_EQUAL, OP_EQUALVERIFY, OP_HASH160, OP_IF, OP_NOTIF, OP_PUSHDATA, OP_SIZE, OP_SWAP, OutPoint, Protocol, SIGHASH_ALL, Satoshi, Script, ScriptElt, ScriptWitness, Transaction, TxIn, TxOut}
 
 /**
   * Created by PM on 02/12/2016.
@@ -176,6 +176,7 @@ object Scripts {
     * By convention in bitcoin, depending of the value of locktime it might be a number of blocks or a number of seconds since epoch.
     * This function does not support the case when the locktime is a number of seconds that is not way in the past.
     * NB: We use this property in lightning to store data in this field.
+    *
     * @return the block height before which this tx cannot be published.
     */
   def cltvTimeout(tx: Transaction): Long = {
@@ -240,6 +241,36 @@ object Scripts {
     OP_SIZE :: OP_PUSHDATA(Script.encodeNumber(32)) :: OP_EQUAL ::
     OP_NOTIF ::
       OP_DROP :: OP_2 :: OP_SWAP :: OP_PUSHDATA(localPubkey) :: OP_2 :: OP_CHECKMULTISIG ::
+    OP_ELSE ::
+      OP_HASH160 :: OP_PUSHDATA(paymentHash) :: OP_EQUALVERIFY ::
+      OP_CHECKSIG ::
+    OP_ENDIF :: Nil
+    // @formatter:on
+  }
+
+  /*
+ <remotekey> OP_SWAP
+  OP_SIZE 32 OP_EQUAL
+  OP_NOTIF
+      # To me via HTLC-timeout transaction (timelocked).
+      OP_DROP 2 OP_SWAP <localkey> <revocation-key> 3 OP_CHECKMULTISIG
+  OP_ELSE
+      # To you with preimage.
+      OP_HASH160 <ripemd-of-payment-hash> OP_EQUALVERIFY
+      OP_CHECKSIG
+  OP_ENDIF
+
+    can be redeemd with
+    - remote key + payment preimage
+    - remot key + local key
+    - remote key + revocation key (this is the extended part)
+   */
+  def htlcOfferedEx(localPubkey: PublicKey, remotePubkey: PublicKey, revocationPubKey: PublicKey, paymentHash: BinaryData): Seq[ScriptElt] = {
+    // @formatter:off
+    OP_PUSHDATA(remotePubkey) :: OP_SWAP ::
+    OP_SIZE :: OP_PUSHDATA(encodeNumber(32)) :: OP_EQUAL ::
+    OP_NOTIF ::
+      OP_DROP :: OP_2 :: OP_SWAP :: OP_PUSHDATA(localPubkey) :: OP_PUSHDATA(revocationPubKey) :: OP_3 :: OP_CHECKMULTISIG ::
     OP_ELSE ::
       OP_HASH160 :: OP_PUSHDATA(paymentHash) :: OP_EQUALVERIFY ::
       OP_CHECKSIG ::
