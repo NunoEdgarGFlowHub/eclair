@@ -236,6 +236,48 @@ class TransactionsSpec extends FunSuite {
     Transaction.correctlySpends(tx4, tx :: Nil, ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
   }
 
+  test("new version of received HTLC can be claimed with the payment preimage or the revocation private key") {
+    val localFundingPriv = Scalar(BinaryData("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749") :+ 1.toByte)
+    val remoteFundingPriv = Scalar(BinaryData("1552dfba4f6cf29a62a0af13c8d6981d36d0ef8d61ba10fb0fe90da7634d7e13") :+ 1.toByte)
+    val localRevocationPriv = Scalar(BinaryData("131526c63723ff1d36c28e61a8bdc86660d7893879bbda4cfeaad2022db7c109") :+ 1.toByte)
+    val localPaymentPriv = Scalar(BinaryData("e937268a37a774aa948ebddff3187fedc7035e3f0a029d8d85f31bda33b02d55") :+ 1.toByte)
+    val remotePaymentPriv = Scalar(BinaryData("ce65059278a571ee4f4c9b4d5d7fa07449bbe09d9c716879343d9e975df1de33") :+ 1.toByte)
+    val paymentPreimage = BinaryData("0102030405060708010203040506070801020304050607080102030405060708")
+    val redeemScript = Scripts.htlcReceivedEx(localPaymentPriv.toPoint, remotePaymentPriv.toPoint, localRevocationPriv.toPoint, Crypto.hash160(paymentPreimage), 144)
+    val tx = Transaction(version = 2,
+      txIn = Nil,
+      txOut = TxOut(MilliBtc(42), Script.pay2wsh(redeemScript)) :: Nil,
+      lockTime = 0
+    )
+
+    // spend with payment preimage , local key and remote key
+    val tx2 = {
+      val tmp = Transaction(version = 2, txIn = TxIn(OutPoint(tx, 0), Nil, TxIn.SEQUENCE_FINAL) :: Nil, txOut = TxOut(MilliBtc(42), pay2wpkh(remotePaymentPriv.toPoint)) :: Nil, 0)
+      val sig1 = Transaction.signInput(tmp, 0, redeemScript, fr.acinq.bitcoin.SIGHASH_ALL, tx.txOut(0).amount, SigVersion.SIGVERSION_WITNESS_V0, remotePaymentPriv)
+      val sig2 = Transaction.signInput(tmp, 0, redeemScript, fr.acinq.bitcoin.SIGHASH_ALL, tx.txOut(0).amount, SigVersion.SIGVERSION_WITNESS_V0, localPaymentPriv)
+      tmp.updateWitness(0, ScriptWitness(BinaryData.empty :: sig1 :: sig2 :: paymentPreimage :: Script.write(redeemScript) :: Nil))
+    }
+    Transaction.correctlySpends(tx2, tx :: Nil, ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
+
+    // spend with remote key after a delay
+    val tx3 = {
+      val tmp = Transaction(version = 2, txIn = TxIn(OutPoint(tx, 0), Nil, TxIn.SEQUENCE_LOCKTIME_MASK) :: Nil, txOut = TxOut(MilliBtc(42), pay2wpkh(remotePaymentPriv.toPoint)) :: Nil, lockTime = 145)
+      val sig = Transaction.signInput(tmp, 0, redeemScript, fr.acinq.bitcoin.SIGHASH_ALL, tx.txOut(0).amount, SigVersion.SIGVERSION_WITNESS_V0, remotePaymentPriv)
+      tmp.updateWitness(0, ScriptWitness(sig :: BinaryData.empty :: Script.write(redeemScript) :: Nil))
+    }
+    Transaction.correctlySpends(tx3, tx :: Nil, ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
+
+
+    // spend with remote key and revocation key
+    val tx4 = {
+      val tmp = Transaction(version = 2, txIn = TxIn(OutPoint(tx, 0), Nil, TxIn.SEQUENCE_FINAL) :: Nil, txOut = TxOut(MilliBtc(42), pay2wpkh(remotePaymentPriv.toPoint)) :: Nil, 0)
+      val sig1 = Transaction.signInput(tmp, 0, redeemScript, fr.acinq.bitcoin.SIGHASH_ALL, tx.txOut(0).amount, SigVersion.SIGVERSION_WITNESS_V0, remotePaymentPriv)
+      val sig2 = Transaction.signInput(tmp, 0, redeemScript, fr.acinq.bitcoin.SIGHASH_ALL, tx.txOut(0).amount, SigVersion.SIGVERSION_WITNESS_V0, localRevocationPriv)
+      tmp.updateWitness(0, ScriptWitness(BinaryData.empty :: sig1 :: sig2 :: Script.write(redeemScript) :: Nil))
+    }
+    Transaction.correctlySpends(tx4, tx :: Nil, ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
+  }
+
   test("BOLT 3 test vectors") {
 
     val localFundingPriv = Scalar(BinaryData("30ff4956bbdd3222d44cc5e8a1261dab1e07957bdac5ae88fe3261ef321f3749") :+ 1.toByte)

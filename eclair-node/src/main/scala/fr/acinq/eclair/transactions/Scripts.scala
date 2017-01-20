@@ -304,6 +304,24 @@ object Scripts {
     // @formatter:on
   }
 
+  def htlcReceivedEx(localKey: BinaryData, remotePubkey: BinaryData, revocationPubKey: BinaryData, paymentHash: BinaryData, lockTime: Long): Seq[ScriptElt] = {
+    // @formatter:off
+    OP_PUSHDATA(remotePubkey) :: OP_SWAP ::
+    OP_SIZE :: OP_PUSHDATA(Script.encodeNumber(32)) :: OP_EQUAL ::
+    OP_IF ::
+      OP_HASH160 :: OP_PUSHDATA(paymentHash) :: OP_EQUALVERIFY ::
+      OP_2 :: OP_SWAP :: OP_PUSHDATA(localKey) :: OP_2 :: OP_CHECKMULTISIG ::
+    OP_ELSE ::
+      OP_SIZE :: OP_0 :: OP_EQUAL ::
+      OP_IF ::
+        OP_DROP :: OP_PUSHDATA(Script.encodeNumber(lockTime)) :: OP_CHECKLOCKTIMEVERIFY :: OP_DROP :: OP_CHECKSIG ::
+      OP_ELSE ::
+        OP_SWAP :: OP_2 :: OP_SWAP :: OP_PUSHDATA(revocationPubKey) :: OP_2 :: OP_CHECKMULTISIG ::
+      OP_ENDIF ::
+    OP_ENDIF :: Nil
+    // @formatter:on
+  }
+
   /**
     * This is the witness script of the 2nd-stage HTLC Timeout transaction (consumes htlcReceived script from commit tx)
     */
