@@ -2,6 +2,7 @@ package fr.acinq.eclair.channel.states.e
 
 import akka.actor.Props
 import akka.testkit.{TestFSMRef, TestProbe}
+import fr.acinq.bitcoin.Crypto.{Point, Scalar}
 import fr.acinq.bitcoin.{BinaryData, Crypto, Satoshi, Script, ScriptFlags, Transaction}
 import fr.acinq.eclair.TestConstants.{Alice, Bob}
 import fr.acinq.eclair.blockchain._
@@ -30,8 +31,8 @@ class NormalStateSpec extends StateSpecBaseClass with StateTestsHelperMethods {
     val blockchainA = system.actorOf(Props(new PeerWatcher(new TestBitcoinClient(), 300)))
     val bob2blockchain = TestProbe()
     val paymentHandler = TestProbe()
-    val alice: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(alice2bob.ref, alice2blockchain.ref, paymentHandler.ref, Alice.channelParams, "B"))
-    val bob: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(bob2alice.ref, bob2blockchain.ref, paymentHandler.ref, Bob.channelParams, "A"))
+    val alice: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(alice2bob.ref, alice2blockchain.ref, paymentHandler.ref, Alice.channelParams, "0B"))
+    val bob: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(bob2alice.ref, bob2blockchain.ref, paymentHandler.ref, Bob.channelParams, "0A"))
     within(30 seconds) {
       reachNormal(alice, bob, alice2bob, bob2alice, blockchainA, alice2blockchain, bob2blockchain)
       awaitCond(alice.stateName == NORMAL)
@@ -420,7 +421,7 @@ class NormalStateSpec extends StateSpecBaseClass with StateTestsHelperMethods {
 
       // actual test begins
       bob2alice.expectMsgType[RevokeAndAck]
-      sender.send(alice, RevokeAndAck(0, "11" * 32, "22" * 32, Nil))
+      sender.send(alice, RevokeAndAck(0, Scalar("11" * 32), Scalar("22" * 32).toPoint, Nil))
       alice2bob.expectMsgType[Error]
       awaitCond(alice.stateName == CLOSING)
       alice2blockchain.expectMsg(PublishAsap(tx))
@@ -433,7 +434,7 @@ class NormalStateSpec extends StateSpecBaseClass with StateTestsHelperMethods {
       val tx = alice.stateData.asInstanceOf[DATA_NORMAL].commitments.localCommit.publishableTxs.commitTx.tx
       val sender = TestProbe()
       awaitCond(alice.stateData.asInstanceOf[DATA_NORMAL].commitments.remoteNextCommitInfo.isRight)
-      sender.send(alice, RevokeAndAck(0, "11" * 32, "22" * 32, Nil))
+      sender.send(alice, RevokeAndAck(0, Scalar("11" * 32), Scalar("22" * 32).toPoint, Nil))
       alice2bob.expectMsgType[Error]
       awaitCond(alice.stateName == CLOSING)
       alice2blockchain.expectMsg(PublishAsap(tx))
@@ -647,6 +648,14 @@ class NormalStateSpec extends StateSpecBaseClass with StateTestsHelperMethods {
     }
   }
 
+  test("recv CMD_CLOSE (with invalid final script)") { case (alice, bob, alice2bob, bob2alice, _, _) =>
+    within(30 seconds) {
+      val sender = TestProbe()
+      sender.send(alice, CMD_CLOSE(Some(BinaryData("00112233445566778899"))))
+      sender.expectMsg("invalid final script")
+    }
+  }
+
   test("recv CMD_CLOSE (with signed sent htlcs)") { case (alice, bob, alice2bob, bob2alice, _, _) =>
     within(30 seconds) {
       val sender = TestProbe()
@@ -692,7 +701,7 @@ class NormalStateSpec extends StateSpecBaseClass with StateTestsHelperMethods {
   test("recv Shutdown (no pending htlcs)") { case (alice, _, alice2bob, _, alice2blockchain, _) =>
     within(30 seconds) {
       val sender = TestProbe()
-      sender.send(alice, Shutdown(0, "00" * 25))
+      sender.send(alice, Shutdown(0, Script.write(Bob.channelParams.defaultFinalScriptPubKey)))
       alice2bob.expectMsgType[Shutdown]
       alice2bob.expectMsgType[ClosingSigned]
       awaitCond(alice.stateName == NEGOTIATING)
@@ -719,6 +728,17 @@ class NormalStateSpec extends StateSpecBaseClass with StateTestsHelperMethods {
       val (r, htlc) = addHtlc(50000000, alice, bob, alice2bob, bob2alice)
       // actual test begins
       sender.send(bob, Shutdown(0, Script.write(TestConstants.Alice.channelParams.defaultFinalScriptPubKey)))
+      bob2alice.expectMsgType[Error]
+      bob2blockchain.expectMsgType[PublishAsap]
+      bob2blockchain.expectMsgType[WatchConfirmed]
+      awaitCond(bob.stateName == CLOSING)
+    }
+  }
+
+  test("recv Shutdown (with invalid final script)") { case (alice, bob, alice2bob, bob2alice, _, bob2blockchain) =>
+    within(30 seconds) {
+      val sender = TestProbe()
+      sender.send(bob, Shutdown(0, BinaryData("00112233445566778899")))
       bob2alice.expectMsgType[Error]
       bob2blockchain.expectMsgType[PublishAsap]
       bob2blockchain.expectMsgType[WatchConfirmed]
@@ -797,7 +817,7 @@ class NormalStateSpec extends StateSpecBaseClass with StateTestsHelperMethods {
       }).sum
       alice2blockchain.expectNoMsg(1 second)
       // at best we have a little less than 450 000 + 250 000 + 100 000 + 50 000 = 850000 (because fees)
-      assert(amountClaimed == Satoshi(831944))
+      assert(amountClaimed == Satoshi(828240))
 
       awaitCond(alice.stateName == CLOSING)
       assert(alice.stateData.asInstanceOf[DATA_CLOSING].remoteCommitPublished.isDefined)
@@ -847,8 +867,8 @@ class NormalStateSpec extends StateSpecBaseClass with StateTestsHelperMethods {
       Transaction.correctlySpends(punishTx, Seq(revokedTx), ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
 
       // two main outputs are 760 000 and 200 000
-      assert(mainTx.txOut(0).amount == Satoshi(746983))
-      assert(punishTx.txOut(0).amount == Satoshi(195284))
+      assert(mainTx.txOut(0).amount == Satoshi(743400))
+      assert(punishTx.txOut(0).amount == Satoshi(195170))
 
       awaitCond(alice.stateName == CLOSING)
       assert(alice.stateData.asInstanceOf[DATA_CLOSING].revokedCommitPublished.size == 1)

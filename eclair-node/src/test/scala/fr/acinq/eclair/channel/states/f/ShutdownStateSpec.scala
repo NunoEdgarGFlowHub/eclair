@@ -2,6 +2,7 @@ package fr.acinq.eclair.channel.states.f
 
 import akka.actor.Props
 import akka.testkit.{TestFSMRef, TestProbe}
+import fr.acinq.bitcoin.Crypto.Scalar
 import fr.acinq.bitcoin.{BinaryData, Crypto, Satoshi, ScriptFlags, Transaction}
 import fr.acinq.eclair.TestBitcoinClient
 import fr.acinq.eclair.TestConstants.{Alice, Bob}
@@ -29,8 +30,8 @@ class ShutdownStateSpec extends StateSpecBaseClass with StateTestsHelperMethods 
     val blockchainA = system.actorOf(Props(new PeerWatcher(new TestBitcoinClient(), 300)))
     val bob2blockchain = TestProbe()
     val paymentHandler = TestProbe()
-    val alice: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(alice2bob.ref, alice2blockchain.ref, paymentHandler.ref, Alice.channelParams, "B"))
-    val bob: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(bob2alice.ref, bob2blockchain.ref, paymentHandler.ref, Bob.channelParams, "A"))
+    val alice: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(alice2bob.ref, alice2blockchain.ref, paymentHandler.ref, Alice.channelParams, "0B"))
+    val bob: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(bob2alice.ref, bob2blockchain.ref, paymentHandler.ref, Bob.channelParams, "0A"))
     within(30 seconds) {
       reachNormal(alice, bob, alice2bob, bob2alice, blockchainA, alice2blockchain, bob2blockchain)
       val sender = TestProbe()
@@ -329,7 +330,7 @@ class ShutdownStateSpec extends StateSpecBaseClass with StateTestsHelperMethods 
       bob2alice.forward(alice)
       alice2bob.expectMsgType[RevokeAndAck]
       awaitCond(bob.stateData.asInstanceOf[DATA_SHUTDOWN].commitments.remoteNextCommitInfo.isLeft)
-      sender.send(bob, RevokeAndAck(0, "11" * 32, "22" * 32, Nil))
+      sender.send(bob, RevokeAndAck(0, Scalar("11" * 32), Scalar("22" * 32).toPoint, Nil))
       bob2alice.expectMsgType[Error]
       awaitCond(bob.stateName == CLOSING)
       bob2blockchain.expectMsg(PublishAsap(tx))
@@ -342,7 +343,7 @@ class ShutdownStateSpec extends StateSpecBaseClass with StateTestsHelperMethods 
       val tx = alice.stateData.asInstanceOf[DATA_SHUTDOWN].commitments.localCommit.publishableTxs.commitTx.tx
       val sender = TestProbe()
       awaitCond(alice.stateData.asInstanceOf[DATA_SHUTDOWN].commitments.remoteNextCommitInfo.isRight)
-      sender.send(alice, RevokeAndAck(0, "11" * 32, "22" * 32, Nil))
+      sender.send(alice, RevokeAndAck(0, Scalar("11" * 32), Scalar("22" * 32).toPoint, Nil))
       alice2bob.expectMsgType[Error]
       awaitCond(alice.stateName == CLOSING)
       alice2blockchain.expectMsg(PublishAsap(tx))
@@ -368,7 +369,7 @@ class ShutdownStateSpec extends StateSpecBaseClass with StateTestsHelperMethods 
       }).sum
       alice2blockchain.expectNoMsg(1 second)
       // htlc will timeout and be eventually refunded so we have a little less than fundingSatoshis - pushMsat = 1000000 - 200000 = 800000 (because fees)
-      assert(amountClaimed == Satoshi(785304))
+      assert(amountClaimed == Satoshi(781680))
 
       awaitCond(alice.stateName == CLOSING)
       assert(alice.stateData.asInstanceOf[DATA_CLOSING].remoteCommitPublished.isDefined)
@@ -403,8 +404,8 @@ class ShutdownStateSpec extends StateSpecBaseClass with StateTestsHelperMethods 
       Transaction.correctlySpends(punishTx, Seq(revokedTx), ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
 
       // two main outputs are 300 000 and 200 000
-      assert(mainTx.txOut(0).amount == Satoshi(285304))
-      assert(punishTx.txOut(0).amount == Satoshi(195284))
+      assert(mainTx.txOut(0).amount == Satoshi(281680))
+      assert(punishTx.txOut(0).amount == Satoshi(195170))
 
       awaitCond(alice.stateName == CLOSING)
       assert(alice.stateData.asInstanceOf[DATA_CLOSING].revokedCommitPublished.size == 1)
