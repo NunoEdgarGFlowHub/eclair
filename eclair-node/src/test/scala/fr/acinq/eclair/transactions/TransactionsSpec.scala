@@ -251,22 +251,22 @@ class TransactionsSpec extends FunSuite {
       lockTime = 0
     )
 
-    //    // spend with payment preimage , local key and remote key
-    //    val tx2 = {
-    //      val tmp = Transaction(version = 2, txIn = TxIn(OutPoint(tx, 0), Nil, TxIn.SEQUENCE_FINAL) :: Nil, txOut = TxOut(MilliBtc(42), pay2wpkh(remotePaymentPriv.publicKey)) :: Nil, 0)
-    //      val sig1 = Transaction.signInput(tmp, 0, redeemScript, fr.acinq.bitcoin.SIGHASH_ALL, tx.txOut(0).amount, SigVersion.SIGVERSION_WITNESS_V0, remotePaymentPriv)
-    //      val sig2 = Transaction.signInput(tmp, 0, redeemScript, fr.acinq.bitcoin.SIGHASH_ALL, tx.txOut(0).amount, SigVersion.SIGVERSION_WITNESS_V0, localPaymentPriv)
-    //      tmp.updateWitness(0, ScriptWitness(BinaryData.empty :: sig1 :: sig2 :: paymentPreimage :: Script.write(redeemScript) :: Nil))
-    //    }
-    //    Transaction.correctlySpends(tx2, tx :: Nil, ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
+    // spend with payment preimage , local key and remote key
+    val tx2 = {
+      val tmp = Transaction(version = 2, txIn = TxIn(OutPoint(tx, 0), Nil, TxIn.SEQUENCE_FINAL) :: Nil, txOut = TxOut(MilliBtc(42), pay2wpkh(remotePaymentPriv.publicKey)) :: Nil, 0)
+      val sig1 = Transaction.signInput(tmp, 0, redeemScript, fr.acinq.bitcoin.SIGHASH_ALL, tx.txOut(0).amount, SigVersion.SIGVERSION_WITNESS_V0, remotePaymentPriv)
+      val sig2 = Transaction.signInput(tmp, 0, redeemScript, fr.acinq.bitcoin.SIGHASH_ALL, tx.txOut(0).amount, SigVersion.SIGVERSION_WITNESS_V0, localPaymentPriv)
+      tmp.updateWitness(0, ScriptWitness(BinaryData.empty :: sig1 :: sig2 :: paymentPreimage :: Script.write(redeemScript) :: Nil))
+    }
+    Transaction.correctlySpends(tx2, tx :: Nil, ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
 
-    //    // spend with remote key after a delay
-    //    val tx3 = {
-    //      val tmp = Transaction(version = 2, txIn = TxIn(OutPoint(tx, 0), Nil, TxIn.SEQUENCE_LOCKTIME_MASK) :: Nil, txOut = TxOut(MilliBtc(42), pay2wpkh(remotePaymentPriv.publicKey)) :: Nil, lockTime = 145)
-    //      val sig = Transaction.signInput(tmp, 0, redeemScript, fr.acinq.bitcoin.SIGHASH_ALL, tx.txOut(0).amount, SigVersion.SIGVERSION_WITNESS_V0, remotePaymentPriv)
-    //      tmp.updateWitness(0, ScriptWitness(sig :: BinaryData.empty :: Script.write(redeemScript) :: Nil))
-    //    }
-    //    Transaction.correctlySpends(tx3, tx :: Nil, ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
+    // spend with remote key after a delay
+    val tx3 = {
+      val tmp = Transaction(version = 2, txIn = TxIn(OutPoint(tx, 0), Nil, TxIn.SEQUENCE_LOCKTIME_MASK) :: Nil, txOut = TxOut(MilliBtc(42), pay2wpkh(remotePaymentPriv.publicKey)) :: Nil, lockTime = 145)
+      val sig = Transaction.signInput(tmp, 0, redeemScript, fr.acinq.bitcoin.SIGHASH_ALL, tx.txOut(0).amount, SigVersion.SIGVERSION_WITNESS_V0, remotePaymentPriv)
+      tmp.updateWitness(0, ScriptWitness(sig :: BinaryData.empty :: Script.write(redeemScript) :: Nil))
+    }
+    Transaction.correctlySpends(tx3, tx :: Nil, ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
 
 
     // spend with revocation key
