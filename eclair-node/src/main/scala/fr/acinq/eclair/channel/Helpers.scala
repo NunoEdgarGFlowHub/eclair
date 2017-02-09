@@ -117,6 +117,7 @@ object Helpers {
 
       val localPerCommitmentPoint = Generators.perCommitPoint(localParams.shaSeed, commitments.localCommit.index.toInt)
       val localRevocationPubkey = Generators.revocationPubKey(remoteParams.revocationBasepoint, localPerCommitmentPoint)
+      val localPrivkey = Generators.derivePrivKey(localParams.paymentKey, localPerCommitmentPoint)
       val localDelayedPrivkey = Generators.derivePrivKey(localParams.delayedPaymentKey, localPerCommitmentPoint)
 
       // first we will claim our main output as soon as the delay is over
@@ -177,13 +178,13 @@ object Helpers {
       val (remoteCommitTx, htlcTimeoutTxs, htlcSuccessTxs) = Commitments.makeRemoteTxs(remoteCommit.index, localParams, remoteParams, commitInput, remoteCommit.remotePerCommitmentPoint, remoteCommit.spec)
       require(remoteCommitTx.tx.txid == tx.txid, "txid mismatch, cannot recompute the current remote commit tx")
 
-      val remoteDelayedPubkey = Generators.derivePubKey(remoteParams.delayedPaymentBasepoint, remoteCommit.remotePerCommitmentPoint)
+      val remotePubkey = Generators.derivePubKey(remoteParams.paymentBasepoint, remoteCommit.remotePerCommitmentPoint)
       val localPrivkey = Generators.derivePrivKey(localParams.paymentKey, remoteCommit.remotePerCommitmentPoint)
 
       // first we will claim our main output right away
       // TODO: it is possible that there is no main output, but it should probably be handled more nicely than with a Try
       val mainTx = Try {
-        val claimMain = Transactions.makeClaimP2PKHOutputTx(tx, localPrivkey.publicKey, localParams.defaultFinalScriptPubKey, localCommit.spec.feeRatePerKw)
+        val claimMain = Transactions.makeClaimP2WPKHOutputTx(tx, localPrivkey.publicKey, localParams.defaultFinalScriptPubKey, localCommit.spec.feeRatePerKw)
         val sig = Transactions.sign(claimMain, localPrivkey)
         Transactions.addSigs(claimMain, localPrivkey.publicKey, sig)
       }.toOption
@@ -196,13 +197,13 @@ object Helpers {
         // incoming htlc for which we have the preimage: we spend it directly
         case Htlc(OUT, add: UpdateAddHtlc, _) if preimages.exists(r => sha256(r) == add.paymentHash) =>
           val preimage = preimages.find(r => sha256(r) == add.paymentHash).get
-          val tx = Transactions.makeClaimHtlcSuccessTx(remoteCommitTx.tx, localPrivkey.publicKey, remoteDelayedPubkey, localParams.defaultFinalScriptPubKey, add)
+          val tx = Transactions.makeClaimHtlcSuccessTx(remoteCommitTx.tx, localPrivkey.publicKey, remotePubkey, localParams.defaultFinalScriptPubKey, add)
           val sig = Transactions.sign(tx, localPrivkey)
           Transactions.addSigs(tx, sig, preimage)
         // NB: incoming htlc for which we don't have the preimage: nothing to do, it will timeout eventually and they will get their funds back
         // outgoing htlc: they may or may not have the preimage, the only thing to do is try to get back our funds after timeout
         case Htlc(IN, add: UpdateAddHtlc, _) =>
-          val tx = Transactions.makeClaimHtlcTimeoutTx(remoteCommitTx.tx, localPrivkey.publicKey, remoteDelayedPubkey, localParams.defaultFinalScriptPubKey, add)
+          val tx = Transactions.makeClaimHtlcTimeoutTx(remoteCommitTx.tx, localPrivkey.publicKey, remotePubkey, localParams.defaultFinalScriptPubKey, add)
           val sig = Transactions.sign(tx, localPrivkey)
           Transactions.addSigs(tx, sig)
       }.toSeq
@@ -226,7 +227,7 @@ object Helpers {
       * a) if it is a revoked tx we build a set of transactions that will punish them by stealing all their funds
       * b) otherwise there is nothing we can do
       *
-      * @return a list of transactions (one per HTLC that we can claim) if the tx is a revoked commitment, [[None]] otherwise
+      * @return a [[RevokedCommitPublished]] object containing punishment transactions if the tx is a revoked commitment
       */
     def claimRevokedRemoteCommitTxOutputs(commitments: Commitments, tx: Transaction): Option[RevokedCommitPublished] = {
       import commitments._
@@ -236,7 +237,7 @@ object Helpers {
       val txnumber = Transactions.obscuredCommitTxNumber(obscuredTxNumber, remoteParams.paymentBasepoint, localParams.paymentKey.toPoint)
       require(txnumber <= 0xffffffffffffL, "txnumber must be lesser than 48 bits long")
       // now we know what commit number this tx is referring to, we can derive the commitment point from the shachain
-      remotePerCommitmentSecrets.getHash(0xFFFFFFFFFFFFFFFFL - txnumber)
+      remotePerCommitmentSecrets.getHash(0xFFFFFFFFFFFFL - txnumber)
         .map(d => Scalar(d))
         .map { remotePerCommitmentSecret =>
           val remotePerCommitmentPoint = remotePerCommitmentSecret.toPoint
@@ -248,7 +249,7 @@ object Helpers {
           // first we will claim our main output right away
           // TODO: it is possible that there is no main output, but it should probably be handled more nicely than with a Try
           val mainTx = Try {
-            val claimMain = Transactions.makeClaimP2PKHOutputTx(tx, localPrivkey.publicKey, localParams.defaultFinalScriptPubKey, localCommit.spec.feeRatePerKw)
+            val claimMain = Transactions.makeClaimP2WPKHOutputTx(tx, localPrivkey.publicKey, localParams.defaultFinalScriptPubKey, localCommit.spec.feeRatePerKw)
             val sig = Transactions.sign(claimMain, localPrivkey)
             Transactions.addSigs(claimMain, localPrivkey.publicKey, sig)
           }.toOption

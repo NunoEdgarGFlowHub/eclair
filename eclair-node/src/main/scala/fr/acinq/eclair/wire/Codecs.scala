@@ -1,15 +1,16 @@
 package fr.acinq.eclair.wire
 
 import java.math.BigInteger
-import java.net.{Inet4Address, Inet6Address, InetAddress}
+import java.net.{Inet4Address, Inet6Address, InetAddress, InetSocketAddress}
 
 import fr.acinq.bitcoin.Crypto.{Point, PublicKey, Scalar}
 import fr.acinq.bitcoin.{BinaryData, Crypto}
 import fr.acinq.eclair.crypto.Generators
 import fr.acinq.eclair.wire
-import scodec.bits.{BitVector, ByteVector, HexStringSyntax}
+import scodec.bits.{BitVector, ByteVector}
 import scodec.codecs._
 import scodec.{Attempt, Codec, Err}
+import shapeless._, ops.hlist._
 
 
 /**
@@ -25,17 +26,19 @@ object Codecs {
 
   def varsizebinarydata: Codec[BinaryData] = variableSizeBytes(uint16, bytes.xmap(d => BinaryData(d.toSeq), d => ByteVector(d.data)))
 
-  def listofbinarydata(size: Int): Codec[List[BinaryData]] = listOfN(uint16, binarydata(size))
-
   def listofsignatures: Codec[List[BinaryData]] = listOfN(uint16, signature)
 
-  def ipv6: Codec[InetAddress] = Codec[InetAddress](
-    (ia: InetAddress) => ia match {
-      case a: Inet4Address => bytes(16).encode(hex"00 00 00 00 00 00 00 00 00 00 FF FF" ++ ByteVector(a.getAddress))
-      case a: Inet6Address => bytes(16).encode(ByteVector(a.getAddress))
-    },
-    (buf: BitVector) => bytes(16).decode(buf).map(_.map(b => InetAddress.getByAddress(b.toArray)))
-  )
+  def ipv4address: Codec[Inet4Address] = bytes(4).xmap(b => InetAddress.getByAddress(b.toArray).asInstanceOf[Inet4Address], a => ByteVector(a.getAddress))
+
+  def ipv6address: Codec[Inet6Address] = bytes(16).xmap(b => InetAddress.getByAddress(b.toArray).asInstanceOf[Inet6Address], a => ByteVector(a.getAddress))
+
+  def socketaddress: Codec[InetSocketAddress] =
+    (discriminated[InetAddress].by(uint8)
+      .typecase(1, ipv4address)
+      .typecase(2, ipv6address) ~ uint16)
+      .xmap(x => new InetSocketAddress(x._1, x._2), x => (x.getAddress, x.getPort))
+
+  def listofsocketaddresses: Codec[List[InetSocketAddress]] = listOfN(uint16, socketaddress)
 
   def signature: Codec[BinaryData] = Codec[BinaryData](
     (der: BinaryData) => bytes(64).encode(ByteVector(der2wire(der).toArray)),
@@ -128,7 +131,7 @@ object Codecs {
   val fundingCreatedCodec: Codec[FundingCreated] = (
     ("temporaryChannelId" | int64) ::
       ("txid" | binarydata(32)) ::
-      ("outputIndex" | uint16) ::
+      ("outputIndex" | uint8) ::
       ("signature" | signature)).as[FundingCreated]
 
   val fundingSignedCodec: Codec[FundingSigned] = (
@@ -178,7 +181,7 @@ object Codecs {
     ("channelId" | int64) ::
       ("perCommitmentSecret" | scalar) ::
       ("nextPerCommitmentPoint" | point) ::
-      ("padding" | ignore(3)) ::
+      ("padding" | ignore(8 * 3)) ::
       ("htlcTimeoutSignature" | listofsignatures)
     ).as[RevokeAndAck]
 
@@ -186,35 +189,44 @@ object Codecs {
     ("channelId" | int64) ::
       ("feeratePerKw" | uint32)).as[UpdateFee]
 
-  val channelAnnouncementCodec: Codec[ChannelAnnouncement] = (
-    ("nodeSignature1" | signature) ::
-      ("nodeSignature2" | signature) ::
+  val channelAnnouncementWitnessCodec = (
       ("channelId" | int64) ::
-      ("bitcoinSignature1" | signature) ::
-      ("bitcoinSignature2" | signature) ::
       ("nodeId1" | binarydata(33)) ::
       ("nodeId2" | binarydata(33)) ::
       ("bitcoinKey1" | binarydata(33)) ::
-      ("bitcoinKey2" | binarydata(33))).as[ChannelAnnouncement]
+      ("bitcoinKey2" | binarydata(33)))
+
+  val channelAnnouncementCodec: Codec[ChannelAnnouncement] = (
+    ("nodeSignature1" | signature) ::
+      ("nodeSignature2" | signature) ::
+      ("bitcoinSignature1" | signature) ::
+      ("bitcoinSignature2" | signature) ::
+     channelAnnouncementWitnessCodec).as[ChannelAnnouncement]
+
+  val nodeAnnouncementWitnessCodec = (
+      ("timestamp" | uint32) ::
+      ("nodeId" | binarydata(33)) ::
+      ("rgbColor" | rgb) ::
+      ("alias" | zeropaddedstring(32)) ::
+      ("features" | varsizebinarydata) ::
+      ("addresses" | listofsocketaddresses))
 
   val nodeAnnouncementCodec: Codec[NodeAnnouncement] = (
     ("signature" | signature) ::
-      ("timestamp" | uint32) ::
-      ("ip" | ipv6) ::
-      ("port" | uint16) ::
-      ("nodeId" | binarydata(33)) ::
-      ("rgbColor" | rgb) ::
-      ("alias" | zeropaddedstring(32))).as[NodeAnnouncement]
+      nodeAnnouncementWitnessCodec).as[NodeAnnouncement]
 
-  val channelUpdateCodec: Codec[ChannelUpdate] = (
-    ("signature" | signature) ::
+  val channelUpdateWitnessCodec = (
       ("channelId" | int64) ::
       ("timestamp" | uint32) ::
       ("flags" | binarydata(2)) ::
-      ("expiry" | uint16) ::
+      ("cltvExpiryDelta" | uint16) ::
       ("htlcMinimumMsat" | uint32) ::
       ("feeBaseMsat" | uint32) ::
-      ("feeProportionalMillionths" | uint32)).as[ChannelUpdate]
+      ("feeProportionalMillionths" | uint32))
+
+  val channelUpdateCodec: Codec[ChannelUpdate] = (
+    ("signature" | signature) ::
+      channelUpdateWitnessCodec).as[ChannelUpdate]
 
   val lightningMessageCodec = discriminated[LightningMessage].by(uint16)
     .typecase(16, initCodec)
@@ -235,5 +247,11 @@ object Codecs {
     .typecase(256, channelAnnouncementCodec)
     .typecase(257, nodeAnnouncementCodec)
     .typecase(258, channelUpdateCodec)
+
+  val perHopPayloadCodec: Codec[PerHopPayload] = (
+    ("realm" | ignore(8 * 1)) ::
+      ("amt_to_forward" | uint64) ::
+      ("outgoing_cltv_value" | int32) :: // we use a signed int32, it is enough to store cltv for 40 000 years
+      ("unused_with_v0_version_on_header" | ignore(8 * 7))).as[PerHopPayload]
 
 }

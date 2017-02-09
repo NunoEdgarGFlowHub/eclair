@@ -1,8 +1,10 @@
 package fr.acinq.eclair.crypto
 
-import akka.actor.{Actor, ActorRef, ActorSystem, IllegalActorStateException, Props, Stash, Terminated}
+import java.util.concurrent.CountDownLatch
+
+import akka.actor.{Actor, ActorRef, ActorSystem, IllegalActorStateException, OneForOneStrategy, Props, Stash, SupervisorStrategy, Terminated}
 import akka.io.Tcp.{Received, Write}
-import akka.testkit.{TestFSMRef, TestKit, TestProbe}
+import akka.testkit.{TestActorRef, TestFSMRef, TestKit, TestProbe}
 import fr.acinq.bitcoin.{Base58Check, BinaryData}
 import fr.acinq.eclair.crypto.Noise.{Chacha20Poly1305CipherFunctions, CipherState}
 import fr.acinq.eclair.crypto.TransportHandler.ExtendedCipherState
@@ -11,6 +13,7 @@ import org.scalatest.junit.JUnitRunner
 import org.scalatest.{BeforeAndAfterAll, FunSuiteLike}
 
 import scala.annotation.tailrec
+import scala.concurrent.duration._
 
 @RunWith(classOf[JUnitRunner])
 class TransportHandlerSpec extends TestKit(ActorSystem("test")) with FunSuiteLike with BeforeAndAfterAll {
@@ -29,8 +32,8 @@ class TransportHandlerSpec extends TestKit(ActorSystem("test")) with FunSuiteLik
     val pipe = system.actorOf(Props[MyPipe])
     val probe1 = TestProbe()
     val probe2 = TestProbe()
-    val initiator = TestFSMRef(new TransportHandler(Initiator.s, Some(Responder.s.pub), pipe, true, (conn, _) => probe1.ref, TransportHandler.Noop))
-    val responder = TestFSMRef(new TransportHandler(Responder.s, None, pipe, false, (conn, _) => probe2.ref, TransportHandler.Noop))
+    val initiator = TestFSMRef(new TransportHandler(Initiator.s, Some(Responder.s.pub), pipe, true, (conn, _, _) => probe1.ref, TransportHandler.Noop))
+    val responder = TestFSMRef(new TransportHandler(Responder.s, None, pipe, false, (conn, _, _) => probe2.ref, TransportHandler.Noop))
     pipe ! (initiator, responder)
 
     awaitCond(initiator.stateName == TransportHandler.WaitingForCyphertext)
@@ -65,8 +68,8 @@ class TransportHandlerSpec extends TestKit(ActorSystem("test")) with FunSuiteLik
     val pipe = system.actorOf(Props[MyPipe])
     val probe1 = TestProbe()
     val probe2 = TestProbe()
-    val initiator = TestFSMRef(new TransportHandler(Initiator.s, Some(Responder.s.pub), pipe, true, (conn, _) => probe1.ref, mySerializer))
-    val responder = TestFSMRef(new TransportHandler(Responder.s, None, pipe, false, (conn, _) => probe2.ref, mySerializer))
+    val initiator = TestFSMRef(new TransportHandler(Initiator.s, Some(Responder.s.pub), pipe, true, (conn, _, _) => probe1.ref, mySerializer))
+    val responder = TestFSMRef(new TransportHandler(Responder.s, None, pipe, false, (conn, _, _) => probe2.ref, mySerializer))
     pipe ! (initiator, responder)
 
     awaitCond(initiator.stateName == TransportHandler.WaitingForCyphertext)
@@ -89,8 +92,8 @@ class TransportHandlerSpec extends TestKit(ActorSystem("test")) with FunSuiteLik
     val pipe = system.actorOf(Props[MyPipeSplitter])
     val probe1 = TestProbe()
     val probe2 = TestProbe()
-    val initiator = TestFSMRef(new TransportHandler(Initiator.s, Some(Responder.s.pub), pipe, true, (conn, _) => probe1.ref, TransportHandler.Noop))
-    val responder = TestFSMRef(new TransportHandler(Responder.s, None, pipe, false, (conn, _) => probe2.ref, TransportHandler.Noop))
+    val initiator = TestFSMRef(new TransportHandler(Initiator.s, Some(Responder.s.pub), pipe, true, (conn, _, _) => probe1.ref, TransportHandler.Noop))
+    val responder = TestFSMRef(new TransportHandler(Responder.s, None, pipe, false, (conn, _, _) => probe2.ref, TransportHandler.Noop))
     pipe ! (initiator, responder)
 
     awaitCond(initiator.stateName == TransportHandler.WaitingForCyphertext)
@@ -113,15 +116,13 @@ class TransportHandlerSpec extends TestKit(ActorSystem("test")) with FunSuiteLik
     val pipe = system.actorOf(Props[MyPipe])
     val probe1 = TestProbe()
     val probe2 = TestProbe()
-    val initiator = TestFSMRef(new TransportHandler(Initiator.s, Some(Initiator.s.pub), pipe, true, (conn, _) => probe1.ref, TransportHandler.Noop))
-    val responder = TestFSMRef(new TransportHandler(Responder.s, None, pipe, false, (conn, _) => probe2.ref, TransportHandler.Noop))
+    val supervisor = TestActorRef(Props(new MySupervisor()))
+    val initiator = TestFSMRef(new TransportHandler(Initiator.s, Some(Initiator.s.pub), pipe, true, (conn, _, _) => probe1.ref, TransportHandler.Noop), supervisor, "ini")
+    val responder = TestFSMRef(new TransportHandler(Responder.s, None, pipe, false, (conn, _, _) => probe2.ref, TransportHandler.Noop), supervisor, "res")
+    probe1.watch(responder)
     pipe ! (initiator, responder)
 
-    Thread.sleep(1000)
-    val error = intercept[IllegalActorStateException] {
-      awaitCond(initiator.stateName == TransportHandler.WaitingForCyphertext)
-      awaitCond(responder.stateName == TransportHandler.WaitingForCyphertext)
-    }
+    probe1.expectTerminated(responder, 3 seconds)
   }
 
   test("key rotation") {
@@ -217,6 +218,17 @@ object TransportHandlerSpec {
       case Terminated(actor) if actor == a || actor == b => context stop self
       case msg if sender() == a => b forward msg
       case msg if sender() == b => a forward msg
+    }
+  }
+
+  // custom supervisor that will stop an actor if it fails
+  class MySupervisor extends Actor {
+    override def supervisorStrategy: SupervisorStrategy = OneForOneStrategy() {
+      case _ => SupervisorStrategy.stop
+    }
+
+    def receive = {
+      case _ => ()
     }
   }
 

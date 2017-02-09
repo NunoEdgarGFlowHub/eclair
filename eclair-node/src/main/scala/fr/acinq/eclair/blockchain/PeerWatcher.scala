@@ -26,9 +26,9 @@ class PeerWatcher(client: ExtendedBitcoinClient, blockCount: Long)(implicit ec: 
 
     case NewTransaction(tx) =>
       val triggeredWatches = watches.collect {
-        case w@WatchSpent(channel, txid, outputIndex, minDepth, event)
+        case w@WatchSpent(channel, txid, outputIndex, event)
           if tx.txIn.exists(i => i.outPoint.txid == txid && i.outPoint.index == outputIndex) =>
-          channel ! (BITCOIN_FUNDING_SPENT, tx)
+          channel ! WatchEventSpent(event, tx)
           w
       }
       context.become(watching(watches -- triggeredWatches, block2tx, currentBlockCount))
@@ -38,19 +38,23 @@ class PeerWatcher(client: ExtendedBitcoinClient, blockCount: Long)(implicit ec: 
       // TODO: beware of the herd effect
       watches.collect {
         case w@WatchConfirmed(channel, txId, minDepth, event) =>
-          client.getTxConfirmations(txId.toString).collect {
-            // TODO: this is a workaround to not have WatchConfirmed triggered multiple times in testing
-            // the reason is that we cannot fo a become(watches - w, ...) because it happens in the future callback
-            case Some(confirmations) if confirmations >= minDepth => self ! ('trigger, w)
+          client.getTxConfirmations(txId.toString).map {
+            case Some(confirmations) if confirmations >= minDepth =>
+              client.getTransactionShortId(txId.toString).map {
+                // TODO: this is a workaround to not have WatchConfirmed triggered multiple times in testing
+                // the reason is that we cannot do a become(watches - w, ...) because it happens in the future callback
+                case (height, index) => self ! ('trigger, w, WatchEventConfirmed(w.event, height, index))
+              }
+
           }
       }
 
-    case ('trigger, w: WatchConfirmed) if watches.contains(w) =>
+    case ('trigger, w: WatchConfirmed, e: WatchEvent) if watches.contains(w) =>
       log.info(s"triggering $w")
-      w.channel ! w.event
+      w.channel ! e
       context.become(watching(watches - w, block2tx, currentBlockCount))
 
-    case ('trigger, w: WatchConfirmed) if !watches.contains(w) => {}
+    case ('trigger, w: WatchConfirmed, e: WatchEvent) if !watches.contains(w) => {}
 
     case CurrentBlockCount(count) => {
       val toPublish = block2tx.filterKeys(_ <= count)
@@ -71,15 +75,22 @@ class PeerWatcher(client: ExtendedBitcoinClient, blockCount: Long)(implicit ec: 
       // absolute timeout in blocks
       val timeout = Math.max(cltvTimeout, csvTimeout)
       if (timeout <= currentBlockCount) {
+        log.info(s"publishing tx ${Transaction.write(tx)}")
         publish(tx)
       } else {
-        log.info(s"delaying publication of tx $tx until block=$timeout (curblock=$currentBlockCount)")
+        log.info(s"delaying publication of tx ${Transaction.write(tx)} until block=$timeout (curblock=$currentBlockCount)")
         val block2tx1 = block2tx.updated(timeout, tx +: block2tx.getOrElse(timeout, Seq.empty[Transaction]))
         context.become(watching(watches, block2tx1, currentBlockCount))
       }
 
     case MakeFundingTx(ourCommitPub, theirCommitPub, amount) =>
-      client.makeAnchorTx(ourCommitPub, theirCommitPub, amount).pipeTo(sender)
+      client.makeFundingTx(ourCommitPub, theirCommitPub, amount).map(r => MakeFundingTxResponse(r._1, r._2)).pipeTo(sender)
+
+    case GetTx(blockHeight, txIndex, outputIndex, ctx) =>
+      (for {
+        tx <- client.getTransaction(blockHeight, txIndex)
+        spendable <- client.isTransactionOuputSpendable(tx.txid.toString(), outputIndex, true)
+      } yield GetTxResponse(tx, spendable, ctx)).pipeTo(sender)
 
     case Terminated(channel) =>
       // we remove watches associated to dead actor
@@ -89,7 +100,7 @@ class PeerWatcher(client: ExtendedBitcoinClient, blockCount: Long)(implicit ec: 
   }
 
   def publish(tx: Transaction) = client.publishTransaction(tx).onFailure {
-    case t: Throwable => log.error(t, s"cannot publish tx ${BinaryData(Transaction.write(tx))}")
+    case t: Throwable => log.error(s"cannot publish tx: reason=${t.getMessage} tx=${BinaryData(Transaction.write(tx))}")
   }
 }
 

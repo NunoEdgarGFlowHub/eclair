@@ -1,5 +1,6 @@
 package fr.acinq.eclair.gui
 
+import java.util.function.Predicate
 import javafx.application.Platform
 import javafx.event.{ActionEvent, EventHandler}
 import javafx.fxml.FXMLLoader
@@ -7,14 +8,11 @@ import javafx.scene.layout.VBox
 import javafx.stage.Stage
 
 import akka.actor.{Actor, ActorLogging, ActorRef}
-import com.mxgraph.layout.mxCircleLayout
-import com.mxgraph.swing.mxGraphComponent
 import fr.acinq.bitcoin._
 import fr.acinq.eclair.channel._
-import fr.acinq.eclair.gui.controllers.{ChannelPaneController, MainController}
-import fr.acinq.eclair.router.{ChannelDesc, ChannelDiscovered}
+import fr.acinq.eclair.gui.controllers.{ChannelPaneController, MainController, PeerChannel, PeerNode}
+import fr.acinq.eclair.router.{ChannelDiscovered, ChannelLost, NodeDiscovered, NodeLost}
 import fr.acinq.eclair.{Globals, Setup}
-import org.jgrapht.ext.JGraphXAdapter
 import org.jgrapht.graph.{DefaultEdge, SimpleGraph}
 
 
@@ -38,14 +36,14 @@ class GUIUpdater(primaryStage: Stage, mainController: MainController, setup: Set
       log.info(s"new channel: $channel")
 
       val loader = new FXMLLoader(getClass.getResource("/gui/main/channelPane.fxml"))
-      val channelPaneController = new ChannelPaneController(theirNodeId)
+      val channelPaneController = new ChannelPaneController(theirNodeId.toBin.toString(), params)
       loader.setController(channelPaneController)
       val root = loader.load[VBox]
 
       channelPaneController.nodeId.setText(s"$theirNodeId")
       channelPaneController.funder.setText(if (params.isFunder) "Yes" else "No")
       channelPaneController.close.setOnAction(new EventHandler[ActionEvent] {
-        override def handle(event: ActionEvent): Unit = channel ! CMD_CLOSE(None)
+        override def handle(event: ActionEvent) = channel ! CMD_CLOSE(None)
       })
 
       Platform.runLater(new Runnable() {
@@ -69,7 +67,7 @@ class GUIUpdater(primaryStage: Stage, mainController: MainController, setup: Set
         }
       })
 
-    case ChannelChangedState(channel, _, previousState, currentState, currentData) =>
+    case ChannelChangedState(channel, _, _, previousState, currentState, currentData) =>
       val channelPane = m(channel)
       Platform.runLater(new Runnable() {
         override def run(): Unit = {
@@ -87,20 +85,44 @@ class GUIUpdater(primaryStage: Stage, mainController: MainController, setup: Set
         }
       })
 
-    case ChannelDiscovered(ChannelDesc(id, a, b)) =>
-      graph.addVertex(BinaryData(a))
-      graph.addVertex(BinaryData(b))
-      graph.addEdge(a, b, new NamedEdge(id))
-      val jgxAdapter = new JGraphXAdapter(graph)
+    case NodeDiscovered(nodeAnnouncement) =>
+      log.debug(s"peer node discovered with node id = ${nodeAnnouncement.nodeId}")
+      mainController.allNodesList.add(new PeerNode(nodeAnnouncement))
       Platform.runLater(new Runnable() {
         override def run(): Unit = {
-          val component = new mxGraphComponent(jgxAdapter)
-          component.setDragEnabled(false)
-          val lay = new mxCircleLayout(jgxAdapter)
-          lay.execute(jgxAdapter.getDefaultParent())
-          mainController.swingNode.setContent(component)
+          mainController.allNodesTab.setText(s"Nodes (${mainController.allNodesList.size})")
         }
       })
 
+    case NodeLost(nodeId) =>
+      log.debug(s"peer node lost with node id = ${nodeId}")
+      mainController.allNodesList.removeIf(new Predicate[PeerNode] {
+        override def test(pn: PeerNode) = nodeId.equals(pn.id)
+      })
+      Platform.runLater(new Runnable() {
+        override def run(): Unit = {
+          mainController.allNodesTab.setText(s"Nodes (${mainController.allNodesList.size})")
+        }
+      })
+
+    case ChannelDiscovered(channelAnnouncement) =>
+      log.debug(s"peer channel discovered with channel id = ${channelAnnouncement.channelId}")
+      mainController.allChannelsList.add(new PeerChannel(channelAnnouncement))
+      Platform.runLater(new Runnable() {
+        override def run(): Unit = {
+          mainController.allChannelsTab.setText(s"Channels (${mainController.allChannelsList.size})")
+        }
+      })
+
+    case ChannelLost(channelId) =>
+      log.debug(s"peer channel lost with channel id = ${channelId}")
+      mainController.allChannelsList.removeIf(new Predicate[PeerChannel] {
+        override def test(pc: PeerChannel) = pc.id.get == channelId
+      })
+      Platform.runLater(new Runnable() {
+        override def run(): Unit = {
+          mainController.allChannelsTab.setText(s"Channels (${mainController.allChannelsList.size})")
+        }
+      })
   }
 }

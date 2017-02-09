@@ -4,10 +4,11 @@ import akka.actor.Props
 import akka.testkit.{TestFSMRef, TestProbe}
 import fr.acinq.bitcoin.Crypto.Scalar
 import fr.acinq.bitcoin.{BinaryData, Crypto, Satoshi, ScriptFlags, Transaction}
-import fr.acinq.eclair.TestBitcoinClient
+import fr.acinq.eclair.{TestBitcoinClient, TestkitBaseClass}
 import fr.acinq.eclair.TestConstants.{Alice, Bob}
 import fr.acinq.eclair.blockchain._
-import fr.acinq.eclair.channel.states.{StateSpecBaseClass, StateTestsHelperMethods}
+import fr.acinq.eclair.blockchain.peer.CurrentBlockCount
+import fr.acinq.eclair.channel.states.StateTestsHelperMethods
 import fr.acinq.eclair.channel.{Data, State, _}
 import fr.acinq.eclair.wire.{CommitSig, Error, RevokeAndAck, Shutdown, UpdateAddHtlc, UpdateFailHtlc, UpdateFulfillHtlc}
 import org.junit.runner.RunWith
@@ -19,7 +20,7 @@ import scala.concurrent.duration._
   * Created by PM on 05/07/2016.
   */
 @RunWith(classOf[JUnitRunner])
-class ShutdownStateSpec extends StateSpecBaseClass with StateTestsHelperMethods {
+class ShutdownStateSpec extends TestkitBaseClass with StateTestsHelperMethods {
 
   type FixtureParam = Tuple6[TestFSMRef[State, Data, Channel], TestFSMRef[State, Data, Channel], TestProbe, TestProbe, TestProbe, TestProbe]
 
@@ -29,9 +30,10 @@ class ShutdownStateSpec extends StateSpecBaseClass with StateTestsHelperMethods 
     val alice2blockchain = TestProbe()
     val blockchainA = system.actorOf(Props(new PeerWatcher(new TestBitcoinClient(), 300)))
     val bob2blockchain = TestProbe()
-    val paymentHandler = TestProbe()
-    val alice: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(alice2bob.ref, alice2blockchain.ref, paymentHandler.ref, Alice.channelParams, "0B"))
-    val bob: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(bob2alice.ref, bob2blockchain.ref, paymentHandler.ref, Bob.channelParams, "0A"))
+    val relayer = TestProbe()
+    val router = TestProbe()
+    val alice: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(alice2bob.ref, alice2blockchain.ref, router.ref, relayer.ref, Alice.channelParams, Bob.id))
+    val bob: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(bob2alice.ref, bob2blockchain.ref, router.ref, relayer.ref, Bob.channelParams, Alice.id))
     within(30 seconds) {
       reachNormal(alice, bob, alice2bob, bob2alice, blockchainA, alice2blockchain, bob2blockchain)
       val sender = TestProbe()
@@ -338,6 +340,29 @@ class ShutdownStateSpec extends StateSpecBaseClass with StateTestsHelperMethods 
     }
   }
 
+  test("recv CurrentBlockCount (no htlc timed out)") { case (alice, bob, alice2bob, bob2alice, _, _) =>
+    within(30 seconds) {
+      val sender = TestProbe()
+      val initialState = alice.stateData.asInstanceOf[DATA_SHUTDOWN]
+      sender.send(alice, CurrentBlockCount(1400))
+      awaitCond(alice.stateData == initialState)
+    }
+  }
+
+  test("recv CurrentBlockCount (an htlc timed out)") { case (alice, bob, alice2bob, bob2alice, alice2blockchain, _) =>
+    within(30 seconds) {
+      val sender = TestProbe()
+      val initialState = alice.stateData.asInstanceOf[DATA_SHUTDOWN]
+      val aliceCommitTx = initialState.commitments.localCommit.publishableTxs.commitTx.tx
+      sender.send(alice, CurrentBlockCount(1441))
+      alice2blockchain.expectMsg(PublishAsap(aliceCommitTx))
+
+      val watch = alice2blockchain.expectMsgType[WatchConfirmed]
+      assert(watch.txId === aliceCommitTx.txid)
+      assert(watch.event === BITCOIN_LOCALCOMMIT_DONE)
+    }
+  }
+
   test("recv RevokeAndAck (unexpectedly)") { case (alice, bob, alice2bob, bob2alice, alice2blockchain, _) =>
     within(30 seconds) {
       val tx = alice.stateData.asInstanceOf[DATA_SHUTDOWN].commitments.localCommit.publishableTxs.commitTx.tx
@@ -356,9 +381,11 @@ class ShutdownStateSpec extends StateSpecBaseClass with StateTestsHelperMethods 
       // bob publishes his current commit tx, which contains two pending htlcs alice->bob
       val bobCommitTx = bob.stateData.asInstanceOf[DATA_SHUTDOWN].commitments.localCommit.publishableTxs.commitTx.tx
       assert(bobCommitTx.txOut.size == 4) // two main outputs and 2 pending htlcs
-      alice ! (BITCOIN_FUNDING_SPENT, bobCommitTx)
+      alice ! WatchEventSpent(BITCOIN_FUNDING_SPENT, bobCommitTx)
 
-      alice2blockchain.expectMsgType[WatchConfirmed].txId == bobCommitTx.txid
+      val watch = alice2blockchain.expectMsgType[WatchConfirmed]
+      assert(watch.txId === bobCommitTx.txid)
+      assert(watch.event === BITCOIN_REMOTECOMMIT_DONE)
 
       val amountClaimed = (for (i <- 0 until 3) yield {
         val claimHtlcTx = alice2blockchain.expectMsgType[PublishAsap].tx
@@ -367,9 +394,12 @@ class ShutdownStateSpec extends StateSpecBaseClass with StateTestsHelperMethods 
         Transaction.correctlySpends(claimHtlcTx, bobCommitTx :: Nil, ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
         claimHtlcTx.txOut(0).amount
       }).sum
-      alice2blockchain.expectNoMsg(1 second)
       // htlc will timeout and be eventually refunded so we have a little less than fundingSatoshis - pushMsat = 1000000 - 200000 = 800000 (because fees)
-      assert(amountClaimed == Satoshi(781680))
+      assert(amountClaimed == Satoshi(784950))
+
+      assert(alice2blockchain.expectMsgType[WatchSpent].event === BITCOIN_HTLC_SPENT)
+      assert(alice2blockchain.expectMsgType[WatchSpent].event === BITCOIN_HTLC_SPENT)
+      alice2blockchain.expectNoMsg(1 second)
 
       awaitCond(alice.stateName == CLOSING)
       assert(alice.stateData.asInstanceOf[DATA_CLOSING].remoteCommitPublished.isDefined)
@@ -392,9 +422,12 @@ class ShutdownStateSpec extends StateSpecBaseClass with StateTestsHelperMethods 
       // bob now has a new commitment tx
 
       // bob published the revoked tx
-      alice ! (BITCOIN_FUNDING_SPENT, revokedTx)
+      alice ! WatchEventSpent(BITCOIN_FUNDING_SPENT, revokedTx)
       alice2bob.expectMsgType[Error]
-      alice2blockchain.expectMsgType[WatchConfirmed]
+
+      val watch = alice2blockchain.expectMsgType[WatchConfirmed]
+      assert(watch.txId === revokedTx.txid)
+      assert(watch.event === BITCOIN_PUNISHMENT_DONE)
 
       val mainTx = alice2blockchain.expectMsgType[PublishAsap].tx
       val punishTx = alice2blockchain.expectMsgType[PublishAsap].tx
@@ -404,7 +437,7 @@ class ShutdownStateSpec extends StateSpecBaseClass with StateTestsHelperMethods 
       Transaction.correctlySpends(punishTx, Seq(revokedTx), ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
 
       // two main outputs are 300 000 and 200 000
-      assert(mainTx.txOut(0).amount == Satoshi(281680))
+      assert(mainTx.txOut(0).amount == Satoshi(284950))
       assert(punishTx.txOut(0).amount == Satoshi(195170))
 
       awaitCond(alice.stateName == CLOSING)
@@ -419,7 +452,9 @@ class ShutdownStateSpec extends StateSpecBaseClass with StateTestsHelperMethods 
       alice2blockchain.expectMsg(PublishAsap(aliceCommitTx))
       assert(aliceCommitTx.txOut.size == 4) // two main outputs and two htlcs
 
-      alice2blockchain.expectMsgType[WatchConfirmed].txId == aliceCommitTx.txid
+      val watch = alice2blockchain.expectMsgType[WatchConfirmed]
+      assert(watch.txId === aliceCommitTx.txid)
+      assert(watch.event === BITCOIN_LOCALCOMMIT_DONE)
 
       // alice can claim both htlc after a timeout
       // so we expect 5 transactions:
@@ -427,7 +462,6 @@ class ShutdownStateSpec extends StateSpecBaseClass with StateTestsHelperMethods 
       // - 2 txes for each htlc
       // - 2 txes for each delayed output of the claimed htlc
       val claimTxs = for (i <- 0 until 5) yield alice2blockchain.expectMsgType[PublishAsap].tx
-      alice2blockchain.expectNoMsg(1 second)
 
       // the main delayed output spends the commitment transaction
       Transaction.correctlySpends(claimTxs(0), aliceCommitTx :: Nil, ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
@@ -439,6 +473,10 @@ class ShutdownStateSpec extends StateSpecBaseClass with StateTestsHelperMethods 
       // 3rd stage transactions spend their respective HTLC-Timeout transactions
       Transaction.correctlySpends(claimTxs(3), claimTxs(1) :: Nil, ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
       Transaction.correctlySpends(claimTxs(4), claimTxs(2) :: Nil, ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
+
+      assert(alice2blockchain.expectMsgType[WatchSpent].event === BITCOIN_HTLC_SPENT)
+      assert(alice2blockchain.expectMsgType[WatchSpent].event === BITCOIN_HTLC_SPENT)
+      alice2blockchain.expectNoMsg(1 second)
 
       awaitCond(alice.stateName == CLOSING)
       assert(alice.stateData.asInstanceOf[DATA_CLOSING].localCommitPublished.isDefined)

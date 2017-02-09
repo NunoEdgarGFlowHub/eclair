@@ -2,15 +2,18 @@ package fr.acinq.eclair.crypto
 
 import java.nio.ByteOrder
 
-import akka.actor.{Actor, ActorRef, LoggingFSM, Terminated}
+import akka.actor.{Actor, ActorContext, ActorRef, LoggingFSM, Terminated}
+import akka.actor.{Actor, ActorRef, LoggingFSM, OneForOneStrategy, SupervisorStrategy, Terminated}
 import akka.io.Tcp.{PeerClosed, _}
 import akka.util.ByteString
+import fr.acinq.bitcoin.Crypto.PublicKey
 import fr.acinq.bitcoin.{BinaryData, Protocol}
 import fr.acinq.eclair.channel.{CMD_CLOSE, Command}
 import fr.acinq.eclair.crypto.Noise._
 
 import scala.annotation.tailrec
 import scala.reflect.ClassTag
+import scala.util.{Failure, Success, Try}
 
 /**
   * see BOLT #8
@@ -28,7 +31,7 @@ import scala.reflect.ClassTag
   * @param listenerFactory factory that will be used to create the listener that will receive decrypted messages once the
   *                        handshake phase as been completed. Its parameters are a tuple (transport handler, remote public key)
   */
-class TransportHandler[T: ClassTag](keyPair: KeyPair, rs: Option[BinaryData], them: ActorRef, isWriter: Boolean, listenerFactory: (ActorRef, BinaryData) => ActorRef, serializer: TransportHandler.Serializer[T]) extends Actor with LoggingFSM[TransportHandler.State, TransportHandler.Data] {
+class TransportHandler[T: ClassTag](keyPair: KeyPair, rs: Option[BinaryData], them: ActorRef, isWriter: Boolean, listenerFactory: (ActorRef, PublicKey, ActorContext) => ActorRef, serializer: TransportHandler.Serializer[T]) extends Actor with LoggingFSM[TransportHandler.State, TransportHandler.Data] {
 
   import TransportHandler._
 
@@ -46,37 +49,52 @@ class TransportHandler[T: ClassTag](keyPair: KeyPair, rs: Option[BinaryData], th
     makeReader(keyPair)
   }
 
+  def sendToListener(listener: ActorRef, plaintextMessages: Seq[BinaryData]) = {
+    plaintextMessages.map(plaintext => {
+      Try(serializer.deserialize(plaintext)) match {
+        case Success(message) => listener ! message
+        case Failure(t) =>
+          log.error(t, s"cannot deserialize $plaintext")
+      }
+    })
+  }
+
   startWith(Handshake, HandshakeData(reader))
 
   when(Handshake) {
     case Event(Received(data), HandshakeData(reader, buffer)) =>
-      self ! 'ping
-      stay using HandshakeData(reader, buffer ++ data)
+      val buffer1 = buffer ++ data
+      if (buffer1.length < expectedLength(reader))
+        stay using HandshakeData(reader, buffer1)
+      else {
+        require(buffer1.head == TransportHandler.prefix, s"invalid transport prefix ${buffer1.head}")
+        val (payload, remainder) = buffer1.tail.splitAt(expectedLength(reader) - 1)
 
-    case Event('ping, HandshakeData(reader, buffer)) if buffer.length < expectedLength(reader) => stay
+        reader.read(payload) match {
+          case (writer, _, Some((dec, enc, ck))) =>
+            val listener = listenerFactory(self, PublicKey(writer.rs), context)
+            context.watch(listener)
+            val (nextStateData, plaintextMessages) = WaitingForCyphertextData(ExtendedCipherState(enc, ck), ExtendedCipherState(dec, ck), None, remainder, listener).decrypt
+            sendToListener(listener, plaintextMessages)
+            goto(WaitingForCyphertext) using nextStateData
 
-    case Event('ping, HandshakeData(reader, buffer)) =>
-      self ! 'ping
-      require(buffer.head == TransportHandler.prefix, s"invalid transport prefix ${buffer.head}")
-      val (payload, remainder) = buffer.tail.splitAt(expectedLength(reader) - 1)
-
-      reader.read(payload) match {
-        case (writer, _, Some((dec, enc, ck))) =>
-          val listener = listenerFactory(self, writer.rs)
-          context.watch(listener)
-          goto(WaitingForCyphertext) using WaitingForCyphertextData(ExtendedCipherState(enc, ck), ExtendedCipherState(dec, ck), None, remainder, listener)
-
-        case (writer, _, None) => {
-          writer.write(BinaryData.empty) match {
-            case (reader1, message, None) => {
-              them ! Write(TransportHandler.prefix +: message)
-              stay using HandshakeData(reader1, remainder)
-            }
-            case (_, message, Some((enc, dec, ck))) => {
-              them ! Write(TransportHandler.prefix +: message)
-              val listener = listenerFactory(self, writer.rs)
-              context.watch(listener)
-              goto(WaitingForCyphertext) using WaitingForCyphertextData(ExtendedCipherState(enc, ck), ExtendedCipherState(dec, ck), None, remainder, listener)
+          case (writer, _, None) => {
+            writer.write(BinaryData.empty) match {
+              case (reader1, message, None) => {
+                // we're still in the middle of the handshake process and the other end must first received our next
+                // message before they can reply
+                require(remainder.isEmpty, "unexpected additional data received during handshake")
+                them ! Write(TransportHandler.prefix +: message)
+                stay using HandshakeData(reader1, remainder)
+              }
+              case (_, message, Some((enc, dec, ck))) => {
+                them ! Write(TransportHandler.prefix +: message)
+                val listener = listenerFactory(self, PublicKey(writer.rs), context)
+                context.watch(listener)
+                val (nextStateData, plaintextMessages) = WaitingForCyphertextData(ExtendedCipherState(enc, ck), ExtendedCipherState(dec, ck), None, remainder, listener).decrypt
+                sendToListener(listener, plaintextMessages)
+                goto(WaitingForCyphertext) using nextStateData
+              }
             }
           }
         }
@@ -95,14 +113,17 @@ class TransportHandler[T: ClassTag](keyPair: KeyPair, rs: Option[BinaryData], th
 
     case Event(Received(data), currentStateData@WaitingForCyphertextData(enc, dec, length, buffer, listener)) =>
       val (nextStateData, plaintextMessages) = WaitingForCyphertextData.decrypt(currentStateData.copy(buffer = buffer ++ data))
-      plaintextMessages.map(plaintext => {
-        val message = serializer.deserialize(plaintext)
-        listener ! message
-      })
+      sendToListener(listener, plaintextMessages)
       stay using nextStateData
 
     case Event(plaintext: BinaryData, WaitingForCyphertextData(enc, dec, length, buffer, listener)) =>
       val (enc1, ciphertext) = TransportHandler.encrypt(enc, plaintext)
+      them ! Write(ByteString.fromArray(ciphertext.toArray))
+      stay using WaitingForCyphertextData(enc1, dec, length, buffer, listener)
+
+    case Event(t: T, WaitingForCyphertextData(enc, dec, length, buffer, listener)) =>
+      val blob = serializer.serialize(t)
+      val (enc1, ciphertext) = TransportHandler.encrypt(enc, blob)
       them ! Write(ByteString.fromArray(ciphertext.toArray))
       stay using WaitingForCyphertextData(enc1, dec, length, buffer, listener)
 
@@ -112,23 +133,19 @@ class TransportHandler[T: ClassTag](keyPair: KeyPair, rs: Option[BinaryData], th
 
     case Event(ErrorClosed(cause), WaitingForCyphertextData(_, _, _, _, listener)) =>
       // we transform connection closed events into application error so that it triggers a uniclose
+      log.error(s"tcp connection error: $cause")
       listener ! fr.acinq.eclair.wire.Error(0, cause.getBytes("UTF-8"))
       stay
 
     case Event(PeerClosed, WaitingForCyphertextData(_, _, _, _, listener)) =>
-      listener ! CMD_CLOSE(None)
+      listener ! fr.acinq.eclair.wire.Error(0, "peer closed".getBytes("UTF-8"))
       stay
   }
 
   whenUnhandled {
     case Event(Terminated(actor), _) if actor == them =>
-      context.stop(self)
+      log.warning("peer closed")
       stay()
-
-    case Event(t: T, _) =>
-      val blob = serializer.serialize(t)
-      self ! blob
-      stay
 
     case Event(message, _) =>
       log.warning(s"unhandled $message")
@@ -202,6 +219,12 @@ object TransportHandler {
 
   case class HandshakeData(reader: Noise.HandshakeStateReader, buffer: ByteString = ByteString.empty) extends Data
 
+  /**
+    * extended cipher state which implements key rotation as per BOLT #8
+    *
+    * @param cs cipher state
+    * @param ck chaining key
+    */
   case class ExtendedCipherState(cs: CipherState, ck: BinaryData) extends CipherState {
     override def cipher: CipherFunctions = cs.cipher
 
@@ -238,7 +261,9 @@ object TransportHandler {
     }
   }
 
-  case class WaitingForCyphertextData(enc: CipherState, dec: CipherState, ciphertextLength: Option[Int], buffer: ByteString, listener: ActorRef) extends Data
+  case class WaitingForCyphertextData(enc: CipherState, dec: CipherState, ciphertextLength: Option[Int], buffer: ByteString, listener: ActorRef) extends Data {
+    def decrypt: (WaitingForCyphertextData, Seq[BinaryData]) = WaitingForCyphertextData.decrypt(this)
+  }
 
   object WaitingForCyphertextData {
     @tailrec

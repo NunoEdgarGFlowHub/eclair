@@ -4,6 +4,7 @@ import akka.actor.ActorSystem
 import fr.acinq.bitcoin.Crypto.PublicKey
 import fr.acinq.bitcoin.{BinaryData, Satoshi, Script, Transaction, TxIn, TxOut}
 import fr.acinq.eclair.blockchain.ExtendedBitcoinClient
+import fr.acinq.eclair.blockchain.ExtendedBitcoinClient.SignTransactionResponse
 import fr.acinq.eclair.blockchain.peer.{NewBlock, NewTransaction}
 import fr.acinq.eclair.blockchain.rpc.BitcoinJsonRPCClient
 import fr.acinq.eclair.transactions.Scripts
@@ -22,7 +23,7 @@ class TestBitcoinClient()(implicit system: ActorSystem) extends ExtendedBitcoinC
     override def run(): Unit = system.eventStream.publish(NewBlock(null)) // blocks are not actually interpreted
   })
 
-  override def makeAnchorTx(ourCommitPub: PublicKey, theirCommitPub: PublicKey, amount: Satoshi)(implicit ec: ExecutionContext): Future[(Transaction, Int)] = {
+  override def makeFundingTx(ourCommitPub: PublicKey, theirCommitPub: PublicKey, amount: Satoshi)(implicit ec: ExecutionContext): Future[(Transaction, Int)] = {
     val anchorTx = Transaction(version = 1,
       txIn = Seq.empty[TxIn],
       txOut = TxOut(amount, Script.pay2wsh(Scripts.multiSig2of2(ourCommitPub, theirCommitPub))) :: Nil,
@@ -40,8 +41,10 @@ class TestBitcoinClient()(implicit system: ActorSystem) extends ExtendedBitcoinC
 
   override def getTransaction(txId: String)(implicit ec: ExecutionContext): Future[Transaction] = ???
 
-  override def fundTransaction(tx: Transaction)(implicit ec: ExecutionContext): Future[FundTransactionResponse] = ???
+  override def fundTransaction(tx: Transaction)(implicit ec: ExecutionContext): Future[ExtendedBitcoinClient.FundTransactionResponse] = ???
 
   override def signTransaction(tx: Transaction)(implicit ec: ExecutionContext): Future[SignTransactionResponse] = ???
+
+  override def getTransactionShortId(txId: String)(implicit ec: ExecutionContext): Future[(Int, Int)] = Future.successful((42000, 42))
 
 }

@@ -106,7 +106,7 @@ object Scripts {
 
   def scriptPubKeyHtlcSend(ourkey: BinaryData, theirkey: BinaryData, abstimeout: Long, reltimeout: Long, rhash: BinaryData, commit_revoke: BinaryData): Seq[ScriptElt] = {
     // values lesser than 16 should be encoded using OP_0..OP_16 instead of OP_PUSHDATA
-    assert(abstimeout > 16, s"abstimeout=$abstimeout must be greater than 16")
+    require(abstimeout > 16, s"abstimeout=$abstimeout must be greater than 16")
     // @formatter:off
     OP_SIZE :: encodeNumber(32) :: OP_EQUALVERIFY ::
     OP_HASH160 :: OP_DUP ::
@@ -123,7 +123,7 @@ object Scripts {
 
   def scriptPubKeyHtlcReceive(ourkey: BinaryData, theirkey: BinaryData, abstimeout: Long, reltimeout: Long, rhash: BinaryData, commit_revoke: BinaryData): Seq[ScriptElt] = {
     // values lesser than 16 should be encoded using OP_0..OP_16 instead of OP_PUSHDATA
-    assert(abstimeout > 16, s"abstimeout=$abstimeout must be greater than 16")
+    require(abstimeout > 16, s"abstimeout=$abstimeout must be greater than 16")
     // @formatter:off
     OP_SIZE :: encodeNumber(32) :: OP_EQUALVERIFY ::
     OP_HASH160 :: OP_DUP ::
@@ -173,13 +173,6 @@ object Scripts {
       ),
       lockTime = 0))
   }
-
-  //def isFunder(o: open_channel): Boolean = o.anch == open_channel.anchor_offer.WILL_CREATE_FUNDING
-
-  def findPublicKeyScriptIndex(tx: Transaction, publicKeyScript: BinaryData): Option[Int] =
-    tx.txOut.zipWithIndex.find {
-      case (TxOut(_, script), _) => script == publicKeyScript
-    } map (_._2)
 
   /**
     * This function interprets the locktime for the given transaction, and returns the block height before which this tx cannot be published.
