@@ -63,8 +63,8 @@ object Transactions {
     */
 
   val commitWeight = 724
-  val htlcTimeoutWeight = 634
-  val htlcSuccessWeight = 671
+  val htlcTimeoutWeight = 669
+  val htlcSuccessWeight = 718
   val claimP2WPKHOutputWeight = 437
   val claimHtlcDelayedWeight = 482
   val mainPunishmentWeight = 483
@@ -172,11 +172,11 @@ object Transactions {
     val htlcOfferedOutputs = spec.htlcs.toSeq
       .filter(_.direction == OUT)
       .filter(htlc => (MilliSatoshi(htlc.add.amountMsat) - htlcTimeoutFee).compare(localDustLimit) >= 0)
-      .map(htlc => TxOut(MilliSatoshi(htlc.add.amountMsat), pay2wsh(htlcOffered(localPubKey, remotePubkey, ripemd160(htlc.add.paymentHash)))))
+      .map(htlc => TxOut(MilliSatoshi(htlc.add.amountMsat), pay2wsh(htlcOffered(localPubKey, remotePubkey, localRevocationPubkey, ripemd160(htlc.add.paymentHash)))))
     val htlcReceivedOutputs = spec.htlcs.toSeq
       .filter(_.direction == IN)
       .filter(htlc => (MilliSatoshi(htlc.add.amountMsat) - htlcSuccessFee).compare(localDustLimit) >= 0)
-      .map(htlc => TxOut(MilliSatoshi(htlc.add.amountMsat), pay2wsh(htlcReceived(localPubKey, remotePubkey, ripemd160(htlc.add.paymentHash), htlc.add.expiry))))
+      .map(htlc => TxOut(MilliSatoshi(htlc.add.amountMsat), pay2wsh(htlcReceived(localPubKey, remotePubkey, localRevocationPubkey, ripemd160(htlc.add.paymentHash), htlc.add.expiry))))
 
     val txnumber = obscuredCommitTxNumber(commitTxNumber, localPaymentBasePoint, remotePaymentBasePoint)
     val (sequence, locktime) = encodeTxNumber(txnumber)
@@ -191,7 +191,7 @@ object Transactions {
 
   def makeHtlcTimeoutTx(commitTx: Transaction, localRevocationPubkey: PublicKey, toLocalDelay: Int, localPubKey: PublicKey, localDelayedPubkey: PublicKey, remotePubkey: PublicKey, feeRatePerKw: Long, htlc: UpdateAddHtlc): HtlcTimeoutTx = {
     val fee = weight2fee(feeRatePerKw, htlcTimeoutWeight)
-    val redeemScript = htlcOffered(localPubKey, remotePubkey, ripemd160(htlc.paymentHash))
+    val redeemScript = htlcOffered(localPubKey, remotePubkey, localRevocationPubkey, ripemd160(htlc.paymentHash))
     val pubkeyScript = write(pay2wsh(redeemScript))
     val outputIndex = findPubKeyScriptIndex(commitTx, pubkeyScript)
     require(outputIndex >= 0, "output not found")
@@ -205,7 +205,7 @@ object Transactions {
 
   def makeHtlcSuccessTx(commitTx: Transaction, localRevocationPubkey: PublicKey, toLocalDelay: Int, localPubkey: PublicKey, localDelayedPubkey: PublicKey, remotePubkey: PublicKey, feeRatePerKw: Long, htlc: UpdateAddHtlc): HtlcSuccessTx = {
     val fee = weight2fee(feeRatePerKw, htlcSuccessWeight)
-    val redeemScript = htlcReceived(localPubkey, remotePubkey, ripemd160(htlc.paymentHash), htlc.expiry)
+    val redeemScript = htlcReceived(localPubkey, remotePubkey, localRevocationPubkey, ripemd160(htlc.paymentHash), htlc.expiry)
     val pubkeyScript = write(pay2wsh(redeemScript))
     val outputIndex = findPubKeyScriptIndex(commitTx, pubkeyScript)
     require(outputIndex >= 0, "output not found")
@@ -222,19 +222,19 @@ object Transactions {
     val htlcSuccessFee = weight2fee(spec.feeRatePerKw, htlcSuccessWeight)
     val htlcTimeoutTxs = spec.htlcs
       .filter(_.direction == OUT)
-      .filter(htlc => (MilliSatoshi(htlc.add.amountMsat) - htlcTimeoutFee).compare(localDustLimit) > 0)
+      .filter(htlc => (MilliSatoshi(htlc.add.amountMsat) - htlcTimeoutFee).compare(localDustLimit) >= 0)
       .map(htlc => makeHtlcTimeoutTx(commitTx, localRevocationPubkey, toLocalDelay, localPubkey, localDelayedPubkey, remotePubkey, spec.feeRatePerKw, htlc.add))
       .toSeq
     val htlcSuccessTxs = spec.htlcs
       .filter(_.direction == IN)
-      .filter(htlc => (MilliSatoshi(htlc.add.amountMsat) - htlcSuccessFee).compare(localDustLimit) > 0)
+      .filter(htlc => (MilliSatoshi(htlc.add.amountMsat) - htlcSuccessFee).compare(localDustLimit) >= 0)
       .map(htlc => makeHtlcSuccessTx(commitTx, localRevocationPubkey, toLocalDelay, localPubkey, localDelayedPubkey, remotePubkey, spec.feeRatePerKw, htlc.add))
       .toSeq
     (htlcTimeoutTxs, htlcSuccessTxs)
   }
 
-  def makeClaimHtlcSuccessTx(commitTx: Transaction, localPubkey: PublicKey, remotePubkey: PublicKey, localFinalScriptPubKey: Seq[ScriptElt], htlc: UpdateAddHtlc): ClaimHtlcSuccessTx = {
-    val redeemScript = htlcOffered(remotePubkey, localPubkey, ripemd160(htlc.paymentHash))
+  def makeClaimHtlcSuccessTx(commitTx: Transaction, localPubkey: PublicKey, remotePubkey: PublicKey, remoteRevocationPubKey: PublicKey, localFinalScriptPubKey: Seq[ScriptElt], htlc: UpdateAddHtlc): ClaimHtlcSuccessTx = {
+    val redeemScript = htlcOffered(remotePubkey, localPubkey, remoteRevocationPubKey, ripemd160(htlc.paymentHash))
     val pubkeyScript = write(pay2wsh(redeemScript))
     val outputIndex = findPubKeyScriptIndex(commitTx, pubkeyScript)
     require(outputIndex >= 0, "output not found")
@@ -247,8 +247,8 @@ object Transactions {
       lockTime = 0))
   }
 
-  def makeClaimHtlcTimeoutTx(commitTx: Transaction, localPubkey: PublicKey, remotePubkey: PublicKey, localFinalScriptPubKey: Seq[ScriptElt], htlc: UpdateAddHtlc): ClaimHtlcTimeoutTx = {
-    val redeemScript = htlcReceived(remotePubkey, localPubkey, ripemd160(htlc.paymentHash), htlc.expiry)
+  def makeClaimHtlcTimeoutTx(commitTx: Transaction, localPubkey: PublicKey, remotePubkey: PublicKey, remoteRevocationPubKey: PublicKey, localFinalScriptPubKey: Seq[ScriptElt], htlc: UpdateAddHtlc): ClaimHtlcTimeoutTx = {
+    val redeemScript = htlcReceived(remotePubkey, localPubkey, remoteRevocationPubKey, ripemd160(htlc.paymentHash), htlc.expiry)
     val pubkeyScript = write(pay2wsh(redeemScript))
     val outputIndex = findPubKeyScriptIndex(commitTx, pubkeyScript)
     require(outputIndex >= 0, "output not found")

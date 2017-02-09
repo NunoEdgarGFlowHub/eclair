@@ -180,6 +180,8 @@ object Helpers {
 
       val remotePubkey = Generators.derivePubKey(remoteParams.paymentBasepoint, remoteCommit.remotePerCommitmentPoint)
       val localPrivkey = Generators.derivePrivKey(localParams.paymentKey, remoteCommit.remotePerCommitmentPoint)
+      val localPerCommitmentPoint = Generators.perCommitPoint(localParams.shaSeed, commitments.localCommit.index.toInt)
+      val localRevocationPubKey = Generators.revocationPubKey(remoteParams.revocationBasepoint, localPerCommitmentPoint)
 
       // first we will claim our main output right away
       // TODO: it is possible that there is no main output, but it should probably be handled more nicely than with a Try
@@ -197,13 +199,13 @@ object Helpers {
         // incoming htlc for which we have the preimage: we spend it directly
         case Htlc(OUT, add: UpdateAddHtlc, _) if preimages.exists(r => sha256(r) == add.paymentHash) =>
           val preimage = preimages.find(r => sha256(r) == add.paymentHash).get
-          val tx = Transactions.makeClaimHtlcSuccessTx(remoteCommitTx.tx, localPrivkey.publicKey, remotePubkey, localParams.defaultFinalScriptPubKey, add)
+          val tx = Transactions.makeClaimHtlcSuccessTx(remoteCommitTx.tx, localPrivkey.publicKey, remotePubkey, localRevocationPubKey, localParams.defaultFinalScriptPubKey, add)
           val sig = Transactions.sign(tx, localPrivkey)
           Transactions.addSigs(tx, sig, preimage)
         // NB: incoming htlc for which we don't have the preimage: nothing to do, it will timeout eventually and they will get their funds back
         // outgoing htlc: they may or may not have the preimage, the only thing to do is try to get back our funds after timeout
         case Htlc(IN, add: UpdateAddHtlc, _) =>
-          val tx = Transactions.makeClaimHtlcTimeoutTx(remoteCommitTx.tx, localPrivkey.publicKey, remotePubkey, localParams.defaultFinalScriptPubKey, add)
+          val tx = Transactions.makeClaimHtlcTimeoutTx(remoteCommitTx.tx, localPrivkey.publicKey, remotePubkey, localRevocationPubKey, localParams.defaultFinalScriptPubKey, add)
           val sig = Transactions.sign(tx, localPrivkey)
           Transactions.addSigs(tx, sig)
       }.toSeq

@@ -238,7 +238,7 @@ object Scripts {
   def witnessToLocalDelayedWithRevocationSig(revocationSig: BinaryData, toLocalScript: BinaryData) =
     ScriptWitness(revocationSig :: BinaryData("01") :: toLocalScript :: Nil)
 
-  def htlcOffered(localPubkey: PublicKey, remotePubkey: PublicKey, paymentHash: BinaryData) = {
+  def htlcOfferedLegacy(localPubkey: PublicKey, remotePubkey: PublicKey, paymentHash: BinaryData) = {
     // @formatter:off
     OP_PUSHDATA(remotePubkey) :: OP_SWAP ::
     OP_SIZE :: encodeNumber(32) :: OP_EQUAL ::
@@ -268,7 +268,7 @@ object Scripts {
     - remot key + local key
     - remote key + revocation key (this is the extended part)
    */
-  def htlcOfferedEx(localPubkey: PublicKey, remotePubkey: PublicKey, revocationPubKey: PublicKey, paymentHash: BinaryData): Seq[ScriptElt] = {
+  def htlcOffered(localPubkey: PublicKey, remotePubkey: PublicKey, revocationPubKey: PublicKey, paymentHash: BinaryData): Seq[ScriptElt] = {
     // @formatter:off
     OP_PUSHDATA(remotePubkey) :: OP_SWAP ::
     OP_SIZE :: encodeNumber(32) :: OP_EQUAL ::
@@ -294,7 +294,7 @@ object Scripts {
   def witnessClaimHtlcSuccessFromCommitTx(localSig: BinaryData, paymentPreimage: BinaryData, htlcOfferedScript: BinaryData) =
     ScriptWitness(localSig :: paymentPreimage :: htlcOfferedScript :: Nil)
 
-  def htlcReceived(localKey: PublicKey, remotePubkey: PublicKey, paymentHash: BinaryData, lockTime: Long) = {
+  def htlcReceivedLegacy(localKey: PublicKey, remotePubkey: PublicKey, paymentHash: BinaryData, lockTime: Long) = {
     // @formatter:off
     OP_PUSHDATA(remotePubkey) :: OP_SWAP ::
     OP_SIZE :: encodeNumber(32) :: OP_EQUAL ::
@@ -307,7 +307,7 @@ object Scripts {
     // @formatter:on
   }
 
-  def htlcReceivedEx(localKey: BinaryData, remotePubkey: BinaryData, revocationPubKey: BinaryData, paymentHash: BinaryData, lockTime: Long): Seq[ScriptElt] = {
+  def htlcReceived(localKey: BinaryData, remotePubkey: BinaryData, revocationPubKey: BinaryData, paymentHash: BinaryData, lockTime: Long): Seq[ScriptElt] = {
     // @formatter:off
     OP_PUSHDATA(remotePubkey) :: OP_SWAP ::
     OP_SIZE :: encodeNumber(32) :: OP_EQUAL ::

@@ -2,12 +2,10 @@ package fr.acinq.eclair.transactions
 
 import java.nio.ByteOrder
 
-import fr.acinq.bitcoin.Crypto.{PrivateKey, Scalar, sha256}
+import fr.acinq.bitcoin.Crypto.{PrivateKey, sha256}
 import fr.acinq.bitcoin.Script.{pay2wpkh, pay2wsh, write}
 import fr.acinq.bitcoin._
 import fr.acinq.eclair.channel.Helpers.Funding
-import fr.acinq.eclair.channel.LocalParams
-import fr.acinq.eclair.crypto.Generators
 import fr.acinq.eclair.transactions.Scripts.toLocalDelayed
 import fr.acinq.eclair.transactions.Transactions.{addSigs, _}
 import fr.acinq.eclair.wire.UpdateAddHtlc
@@ -62,6 +60,7 @@ class TransactionsSpec extends FunSuite {
     val localRevocationPriv = PrivateKey(BinaryData("cc" * 32), compressed = true)
     val localPaymentPriv = PrivateKey(BinaryData("dd" * 32), compressed = true)
     val remotePaymentPriv = PrivateKey(BinaryData("ee" * 32), compressed = true)
+    val remoteRevocationPriv = PrivateKey(BinaryData("ef" * 32), compressed = true)
     val localFinalPriv = PrivateKey(BinaryData("ff" * 32), compressed = true)
     val finalPubKeyScript = Script.pay2wpkh(PrivateKey(BinaryData("ff" * 32), compressed = true).publicKey)
     val toLocalDelay = 144
@@ -107,6 +106,7 @@ class TransactionsSpec extends FunSuite {
     val localRevocationPriv = PrivateKey(BinaryData("cc" * 32) :+ 1.toByte)
     val localPaymentPriv = PrivateKey(BinaryData("dd" * 32) :+ 1.toByte)
     val remotePaymentPriv = PrivateKey(BinaryData("ee" * 32) :+ 1.toByte)
+    val remoteRevocationPriv = PrivateKey(BinaryData("cc" * 32) :+ 1.toByte)
     val finalPubKeyScript = Script.pay2wpkh(PrivateKey(BinaryData("ee" * 32), true).publicKey)
     val commitInput = Funding.makeFundingInputInfo(BinaryData("12" * 32), 0, Btc(1), localFundingPriv.publicKey, remoteFundingPriv.publicKey)
     val toLocalDelay = 144
@@ -166,7 +166,7 @@ class TransactionsSpec extends FunSuite {
 
     {
       // remote spends local->remote htlc output directly in case of success
-      val claimHtlcSuccessTx = makeClaimHtlcSuccessTx(commitTx.tx, remotePaymentPriv.publicKey, localPaymentPriv.publicKey, finalPubKeyScript, htlc1)
+      val claimHtlcSuccessTx = makeClaimHtlcSuccessTx(commitTx.tx, remotePaymentPriv.publicKey, localPaymentPriv.publicKey, remoteRevocationPriv.publicKey, finalPubKeyScript, htlc1)
       val localSig = sign(claimHtlcSuccessTx, remotePaymentPriv)
       val signed = addSigs(claimHtlcSuccessTx, localSig, paymentPreimage1)
       assert(checkSpendable(signed).isSuccess)
@@ -202,7 +202,7 @@ class TransactionsSpec extends FunSuite {
 
     {
       // remote spends remote->local htlc output directly in case of timeout
-      val claimHtlcTimeoutTx = makeClaimHtlcTimeoutTx(commitTx.tx, remotePaymentPriv.publicKey, localPaymentPriv.publicKey, finalPubKeyScript, htlc2)
+      val claimHtlcTimeoutTx = makeClaimHtlcTimeoutTx(commitTx.tx, remotePaymentPriv.publicKey, localPaymentPriv.publicKey, remoteRevocationPriv.publicKey, finalPubKeyScript, htlc2)
       val localSig = sign(claimHtlcTimeoutTx, remotePaymentPriv)
       val signed = addSigs(claimHtlcTimeoutTx, localSig)
       assert(checkSpendable(signed).isSuccess)
@@ -217,7 +217,7 @@ class TransactionsSpec extends FunSuite {
     val localPaymentPriv = PrivateKey(BinaryData("e937268a37a774aa948ebddff3187fedc7035e3f0a029d8d85f31bda33b02d55") :+ 1.toByte)
     val remotePaymentPriv = PrivateKey(BinaryData("ce65059278a571ee4f4c9b4d5d7fa07449bbe09d9c716879343d9e975df1de33") :+ 1.toByte)
     val paymentPreimage = BinaryData("0102030405060708010203040506070801020304050607080102030405060708")
-    val redeemScript = Scripts.htlcOfferedEx(localPaymentPriv.publicKey, remotePaymentPriv.publicKey, localRevocationPriv.publicKey, Crypto.hash160(paymentPreimage))
+    val redeemScript = Scripts.htlcOffered(localPaymentPriv.publicKey, remotePaymentPriv.publicKey, localRevocationPriv.publicKey, Crypto.hash160(paymentPreimage))
     val tx = Transaction(version = 2,
       txIn = Nil,
       txOut = TxOut(MilliBtc(42), Script.pay2wsh(redeemScript)) :: Nil,
@@ -259,7 +259,7 @@ class TransactionsSpec extends FunSuite {
     val localPaymentPriv = PrivateKey(BinaryData("e937268a37a774aa948ebddff3187fedc7035e3f0a029d8d85f31bda33b02d55") :+ 1.toByte)
     val remotePaymentPriv = PrivateKey(BinaryData("ce65059278a571ee4f4c9b4d5d7fa07449bbe09d9c716879343d9e975df1de33") :+ 1.toByte)
     val paymentPreimage = BinaryData("0102030405060708010203040506070801020304050607080102030405060708")
-    val redeemScript = Scripts.htlcReceivedEx(localPaymentPriv.publicKey, remotePaymentPriv.publicKey, localRevocationPriv.publicKey, Crypto.hash160(paymentPreimage), 144)
+    val redeemScript = Scripts.htlcReceived(localPaymentPriv.publicKey, remotePaymentPriv.publicKey, localRevocationPriv.publicKey, Crypto.hash160(paymentPreimage), 144)
     val tx = Transaction(version = 2,
       txIn = Nil,
       txOut = TxOut(MilliBtc(42), Script.pay2wsh(redeemScript)) :: Nil,

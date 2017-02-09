@@ -376,7 +376,7 @@ class ShutdownStateSpec extends TestkitBaseClass with StateTestsHelperMethods {
     }
   }
 
-  test("recv BITCOIN_FUNDING_SPENT (their commit)") { case (alice, bob, alice2bob, bob2alice, alice2blockchain, _) =>
+  ignore("recv BITCOIN_FUNDING_SPENT (their commit)") { case (alice, bob, alice2bob, bob2alice, alice2blockchain, _) =>
     within(30 seconds) {
       // bob publishes his current commit tx, which contains two pending htlcs alice->bob
       val bobCommitTx = bob.stateData.asInstanceOf[DATA_SHUTDOWN].commitments.localCommit.publishableTxs.commitTx.tx

@@ -41,11 +41,13 @@ case class Commitments(localParams: LocalParams, remoteParams: RemoteParams,
 
   def hasTimedoutHtlcs(blockheight: Long): Boolean =
     localCommit.spec.htlcs.exists(htlc => htlc.direction == OUT && blockheight >= htlc.add.expiry) ||
-    remoteCommit.spec.htlcs.exists(htlc => htlc.direction == IN && blockheight >= htlc.add.expiry)
+      remoteCommit.spec.htlcs.exists(htlc => htlc.direction == IN && blockheight >= htlc.add.expiry)
 
   def addLocalProposal(proposal: UpdateMessage): Commitments = Commitments.addLocalProposal(this, proposal)
 
   def addRemoteProposal(proposal: UpdateMessage): Commitments = Commitments.addRemoteProposal(this, proposal)
+
+  def localPerCommitmentPoint = Generators.perCommitPoint(localParams.shaSeed, localCommit.index.toInt)
 }
 
 object Commitments extends Logging {
