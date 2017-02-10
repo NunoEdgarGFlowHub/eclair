@@ -4,6 +4,7 @@ import fr.acinq.bitcoin._
 import fr.acinq.bitcoin.Crypto.{Point, PrivateKey, PublicKey, Scalar}
 import fr.acinq.eclair.channel.Helpers.Funding
 import fr.acinq.eclair.crypto.Generators
+import fr.acinq.eclair.transactions.Scripts.toLocalDelayed
 import fr.acinq.eclair.transactions.Transactions.{HtlcSuccessTx, HtlcTimeoutTx, TransactionWithInputInfo}
 import fr.acinq.eclair.wire.UpdateAddHtlc
 import org.junit.runner.RunWith
@@ -145,11 +146,11 @@ class TestVectorsSpec extends FunSuite {
   val htlcScripts = htlcs.map(htlc => htlc.direction match {
     case OUT =>
       val script = Scripts.htlcOffered(Local.public_key, Remote.public_key, Local.revocation_key, Crypto.ripemd160(htlc.add.paymentHash))
-      println(s"# HTLC offered amount ${MilliSatoshi(htlc.add.amountMsat)} wscript ${Script.write(script)}")
+      println(s"# HTLC offered amount ${MilliSatoshi(htlc.add.amountMsat).toLong} wscript ${Script.write(script)}")
       script
     case IN =>
       val script = Scripts.htlcReceived(Local.public_key, Remote.public_key, Local.revocation_key, Crypto.ripemd160(htlc.add.paymentHash), htlc.add.expiry)
-      println(s"# HTLC received amount ${MilliSatoshi(htlc.add.amountMsat)} wscript ${Script.write(script)}")
+      println(s"# HTLC received amount ${MilliSatoshi(htlc.add.amountMsat).toLong} wscript ${Script.write(script)}")
       script
   })
 
@@ -158,7 +159,7 @@ class TestVectorsSpec extends FunSuite {
   def run(spec: CommitmentSpec) = {
     println(s"to_local_msat: ${spec.toLocalMsat}")
     println(s"to_remote_msat: ${spec.toRemoteMsat}")
-    println(s"feerate_per_kw: ${spec.feeRatePerKw}")
+    println(s"local_feerate_per_kw: ${spec.feeRatePerKw}")
 
     val commitTx = {
       val tx = Transactions.makeCommitTx(
@@ -170,23 +171,39 @@ class TestVectorsSpec extends FunSuite {
         spec)
 
       val local_sig = Transactions.sign(tx, Local.funding_privkey)
-      println(s"# local_signature = $local_sig")
       val remote_sig = Transactions.sign(tx, Remote.funding_privkey)
-      println(s"# remote_signature = $remote_sig")
 
       Transactions.addSigs(tx, Local.funding_pubkey, Remote.funding_pubkey, local_sig, remote_sig)
     }
 
     val baseFee = Transactions.commitTxFee(spec.feeRatePerKw, Local.dustLimit, spec)
-    println(s"# base commitment transaction fee = $baseFee")
+    println(s"# base commitment transaction fee = ${baseFee.toLong}")
     val actualFee = fundingAmount - commitTx.tx.txOut.map(_.amount).sum
-    println(s"# actual commitment transaction fee = $actualFee")
+    println(s"# actual commitment transaction fee = ${actualFee.toLong}")
     commitTx.tx.txOut.map(txOut => {
       txOut.publicKeyScript.length match {
-        case 22 => println(s"# to-remote amount ${txOut.amount}")
-        case 34 => println(s"# to-local amount ${txOut.amount}")
+        case 22 => println(s"# to-remote amount ${txOut.amount.toLong} P2WPKH(${Remote.public_key})")
+        case 34 =>
+          val index = htlcScripts.indexWhere(s => Script.write(Script.pay2wsh(s)) == txOut.publicKeyScript)
+          if (index == -1) println(s"# to-local amount ${txOut.amount.toLong} wscript ${Script.write(toLocalDelayed(Local.revocation_key, Local.toSelfDelay, Local.delayed_key))}")
+          else println(s"# HTLC ${if (htlcs(index).direction == OUT) "offered" else "received"} amount ${txOut.amount.toLong} wscript ${Script.write(htlcScripts(index))}")
       }
     })
+
+    {
+      val tx = Transactions.makeCommitTx(
+        commitmentInput,
+        Local.commitTxNumber, Local.payment_basepoint, Remote.payment_basepoint,
+        true, Local.dustLimit,
+        Local.public_key, Local.revocation_key, Local.toSelfDelay, Local.delayed_key,
+        Remote.public_key,
+        spec)
+
+      val local_sig = Transactions.sign(tx, Local.funding_privkey)
+      println(s"# local_signature = $local_sig")
+      val remote_sig = Transactions.sign(tx, Remote.funding_privkey)
+      println(s"remote_signature: $remote_sig")
+    }
 
     assert(Transactions.getCommitTxNumber(commitTx.tx, Local.payment_basepoint, Remote.payment_basepoint) === Local.commitTxNumber)
     Transaction.correctlySpends(commitTx.tx, Seq(fundingTx), ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
@@ -200,7 +217,11 @@ class TestVectorsSpec extends FunSuite {
       Remote.public_key,
       spec)
 
-    val htlcTxs: Seq[TransactionWithInputInfo] = (unsignedHtlcTimeoutTxs ++ unsignedHtlcSuccessTxs).sortBy(_.input.outPoint.index).map(_ match {
+    println(s"num_htlcs: ${(unsignedHtlcTimeoutTxs ++ unsignedHtlcSuccessTxs).length}")
+    val htlcTxs: Seq[TransactionWithInputInfo] = (unsignedHtlcTimeoutTxs ++ unsignedHtlcSuccessTxs).sortBy(_.input.outPoint.index)
+
+
+    htlcTxs.map(_ match {
       case tx: HtlcSuccessTx =>
         val localSig = Transactions.sign(tx, Local.private_key)
         val remoteSig = Transactions.sign(tx, Remote.private_key)
@@ -208,10 +229,35 @@ class TestVectorsSpec extends FunSuite {
         val tx1 = Transactions.addSigs(tx, localSig, remoteSig, preimage)
         Transaction.correctlySpends(tx1.tx, Seq(commitTx.tx), ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
         val htlcIndex = htlcScripts.indexOf(Script.parse(tx.input.redeemScript))
-        println(s"# htlc_success_tx spends commit tx output ${tx.input.outPoint.index} amount ${tx.input.txOut.amount}")
-        println(s"# amount ${tx1.tx.txOut(0).amount} fee {${tx1.input.txOut.amount - tx1.tx.txOut(0).amount}}")
+        //println(s"# htlc_success_tx spends commit tx output ${tx.input.outPoint.index} amount ${tx.input.txOut.amount.toLong}")
+        //println(s"# amount ${tx1.tx.txOut(0).amount.toLong} fee {${(tx1.input.txOut.amount - tx1.tx.txOut(0).amount).toLong}}")
+        println(s"# signature for output ${tx.input.outPoint.index} (htlc $htlcIndex)")
+        println(s"remote_htlc_signature: $remoteSig")
+        tx1
+      case tx: HtlcTimeoutTx =>
+        val localSig = Transactions.sign(tx, Local.private_key)
+        val remoteSig = Transactions.sign(tx, Remote.private_key)
+        val tx1 = Transactions.addSigs(tx, localSig, remoteSig)
+        Transaction.correctlySpends(tx1.tx, Seq(commitTx.tx), ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
+        //println(s"# htlc_timeout_tx spends commit tx output ${tx.input.outPoint.index} amount ${tx.input.txOut.amount}")
+        //println(s"# amount ${tx1.tx.txOut(0).amount} fee {${tx1.input.txOut.amount - tx1.tx.txOut(0).amount}}")
+        val htlcIndex = htlcScripts.indexOf(Script.parse(tx.input.redeemScript))
+        println(s"# signature for output ${tx.input.outPoint.index} (htlc $htlcIndex)")
+        println(s"remote_htlc_signature: $remoteSig")
+        tx1
+    })
+
+    val signedTxs = htlcTxs.map(_ match {
+      case tx: HtlcSuccessTx =>
+        val localSig = Transactions.sign(tx, Local.private_key)
+        val remoteSig = Transactions.sign(tx, Remote.private_key)
+        val preimage = paymentPreimages.find(p => Crypto.sha256(p) == tx.paymentHash).get
+        val tx1 = Transactions.addSigs(tx, localSig, remoteSig, preimage)
+        Transaction.correctlySpends(tx1.tx, Seq(commitTx.tx), ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
+        val htlcIndex = htlcScripts.indexOf(Script.parse(tx.input.redeemScript))
+        //println(s"# htlc_success_tx spends commit tx output ${tx.input.outPoint.index} amount ${tx.input.txOut.amount.toLong}")
+        //println(s"# amount ${tx1.tx.txOut(0).amount.toLong} fee {${(tx1.input.txOut.amount - tx1.tx.txOut(0).amount).toLong}}")
         println(s"# local signature $localSig")
-        println(s"# remote signature $remoteSig")
         println(s"output htlc_success_tx ${htlcIndex}: ${Transaction.write(tx1.tx)}")
         tx1
       case tx: HtlcTimeoutTx =>
@@ -219,17 +265,16 @@ class TestVectorsSpec extends FunSuite {
         val remoteSig = Transactions.sign(tx, Remote.private_key)
         val tx1 = Transactions.addSigs(tx, localSig, remoteSig)
         Transaction.correctlySpends(tx1.tx, Seq(commitTx.tx), ScriptFlags.STANDARD_SCRIPT_VERIFY_FLAGS)
-        println(s"# htlc_timeout_tx spends commit tx output ${tx.input.outPoint.index} amount ${tx.input.txOut.amount}")
-        println(s"# amount ${tx1.tx.txOut(0).amount} fee {${tx1.input.txOut.amount - tx1.tx.txOut(0).amount}}")
+        //println(s"# htlc_timeout_tx spends commit tx output ${tx.input.outPoint.index} amount ${tx.input.txOut.amount}")
+        //println(s"# amount ${tx1.tx.txOut(0).amount} fee {${tx1.input.txOut.amount - tx1.tx.txOut(0).amount}}")
         println(s"# local signature $localSig")
-        println(s"# remote signature $remoteSig")
         val htlcIndex = htlcScripts.indexOf(Script.parse(tx.input.redeemScript))
         println(s"output htlc_timeout_tx ${htlcIndex}: ${Transaction.write(tx1.tx)}")
         tx1
     })
-    
+
     println
-    (commitTx, htlcTxs)
+    (commitTx, signedTxs)
   }
 
   test("simple commitment tx with no HTLCs") {
