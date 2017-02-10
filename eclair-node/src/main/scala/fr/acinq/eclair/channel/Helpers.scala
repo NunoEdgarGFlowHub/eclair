@@ -195,6 +195,9 @@ object Helpers {
 
       val remotePubkey = Generators.derivePubKey(remoteParams.paymentBasepoint, remoteCommit.remotePerCommitmentPoint)
       val localPrivkey = Generators.derivePrivKey(localParams.paymentKey, remoteCommit.remotePerCommitmentPoint)
+      val localPerCommitmentPoint = Generators.perCommitPoint(localParams.shaSeed, commitments.localCommit.index.toInt)
+      val localRevocationPubKey = Generators.revocationPubKey(remoteParams.revocationBasepoint, localPerCommitmentPoint)
+      val remoteRevocationPubkey = Generators.revocationPubKey(localParams.revocationSecret.toPoint, remoteCommit.remotePerCommitmentPoint)
 
       // first we will claim our main output right away
       val mainTx = generateTx("claim-p2wpkh-output")(Try {
@@ -211,14 +214,14 @@ object Helpers {
         // incoming htlc for which we have the preimage: we spend it directly
         case Htlc(OUT, add: UpdateAddHtlc, _) if preimages.exists(r => sha256(r) == add.paymentHash) => generateTx("claim-htlc-success")(Try {
           val preimage = preimages.find(r => sha256(r) == add.paymentHash).get
-          val tx = Transactions.makeClaimHtlcSuccessTx(remoteCommitTx.tx, localPrivkey.publicKey, remotePubkey, localParams.defaultFinalScriptPubKey, add, localCommit.spec.feeRatePerKw)
+          val tx = Transactions.makeClaimHtlcSuccessTx(remoteCommitTx.tx, localPrivkey.publicKey, remotePubkey, remoteRevocationPubkey, localParams.defaultFinalScriptPubKey, add, localCommit.spec.feeRatePerKw)
           val sig = Transactions.sign(tx, localPrivkey)
           Transactions.addSigs(tx, sig, preimage)
         })
         // NB: incoming htlc for which we don't have the preimage: nothing to do, it will timeout eventually and they will get their funds back
         // outgoing htlc: they may or may not have the preimage, the only thing to do is try to get back our funds after timeout
         case Htlc(IN, add: UpdateAddHtlc, _) => generateTx("claim-htlc-timeout")(Try {
-          val tx = Transactions.makeClaimHtlcTimeoutTx(remoteCommitTx.tx, localPrivkey.publicKey, remotePubkey, localParams.defaultFinalScriptPubKey, add, localCommit.spec.feeRatePerKw)
+          val tx = Transactions.makeClaimHtlcTimeoutTx(remoteCommitTx.tx, localPrivkey.publicKey, remotePubkey, remoteRevocationPubkey, localParams.defaultFinalScriptPubKey, add, localCommit.spec.feeRatePerKw)
           val sig = Transactions.sign(tx, localPrivkey)
           Transactions.addSigs(tx, sig)
         })

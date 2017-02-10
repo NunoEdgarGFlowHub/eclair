@@ -2,7 +2,7 @@ package fr.acinq.eclair.transactions
 
 import fr.acinq.bitcoin.Crypto.{PrivateKey, PublicKey, ripemd160}
 import fr.acinq.bitcoin.Script._
-import fr.acinq.bitcoin.{BinaryData, Crypto, LexicographicalOrdering, LockTimeThreshold, OP_0, OP_1, OP_1NEGATE, OP_2, OP_2DROP, OP_ADD, OP_CHECKLOCKTIMEVERIFY, OP_CHECKMULTISIG, OP_CHECKSEQUENCEVERIFY, OP_CHECKSIG, OP_DROP, OP_DUP, OP_ELSE, OP_ENDIF, OP_EQUAL, OP_EQUALVERIFY, OP_HASH160, OP_IF, OP_NOTIF, OP_PUSHDATA, OP_SIZE, OP_SWAP, OutPoint, SIGHASH_ALL, Satoshi, Script, ScriptElt, ScriptWitness, Transaction, TxIn, TxOut}
+import fr.acinq.bitcoin.{BinaryData, Crypto, LexicographicalOrdering, LockTimeThreshold, OP_0, OP_1, OP_1NEGATE, OP_2, OP_2DROP, OP_3, OP_ADD, OP_CHECKLOCKTIMEVERIFY, OP_CHECKMULTISIG, OP_CHECKSEQUENCEVERIFY, OP_CHECKSIG, OP_DROP, OP_DUP, OP_ELSE, OP_ENDIF, OP_EQUAL, OP_EQUALVERIFY, OP_HASH160, OP_IF, OP_NOTIF, OP_PUSHDATA, OP_SIZE, OP_SWAP, OutPoint, SIGHASH_ALL, Satoshi, Script, ScriptElt, ScriptWitness, Transaction, TxIn, TxOut}
 
 /**
   * Created by PM on 02/12/2016.
@@ -181,12 +181,12 @@ object Scripts {
   def witnessToLocalDelayedWithRevocationSig(revocationSig: BinaryData, toLocalScript: BinaryData) =
     ScriptWitness(revocationSig :: BinaryData("01") :: toLocalScript :: Nil)
 
-  def htlcOffered(localPubkey: PublicKey, remotePubkey: PublicKey, paymentHash: BinaryData) = {
+  def htlcOffered(localPubkey: PublicKey, remotePubkey: PublicKey, revocationPubKey: PublicKey, paymentHash: BinaryData) = {
     // @formatter:off
     OP_PUSHDATA(remotePubkey) :: OP_SWAP ::
     OP_SIZE :: encodeNumber(32) :: OP_EQUAL ::
     OP_NOTIF ::
-      OP_DROP :: OP_2 :: OP_SWAP :: OP_PUSHDATA(localPubkey) :: OP_2 :: OP_CHECKMULTISIG ::
+      OP_DROP :: OP_2 :: OP_SWAP :: OP_PUSHDATA(localPubkey) :: OP_PUSHDATA(revocationPubKey) :: OP_3 :: OP_CHECKMULTISIG ::
     OP_ELSE ::
       OP_HASH160 :: OP_PUSHDATA(paymentHash) :: OP_EQUALVERIFY ::
       OP_CHECKSIG ::
@@ -207,7 +207,7 @@ object Scripts {
   def witnessClaimHtlcSuccessFromCommitTx(localSig: BinaryData, paymentPreimage: BinaryData, htlcOfferedScript: BinaryData) =
     ScriptWitness(localSig :: paymentPreimage :: htlcOfferedScript :: Nil)
 
-  def htlcReceived(localKey: PublicKey, remotePubkey: PublicKey, paymentHash: BinaryData, lockTime: Long) = {
+  def htlcReceived(localKey: PublicKey, remotePubkey: PublicKey, revocationPubKey: PublicKey, paymentHash: BinaryData, lockTime: Long) = {
     // @formatter:off
     OP_PUSHDATA(remotePubkey) :: OP_SWAP ::
     OP_SIZE :: encodeNumber(32) :: OP_EQUAL ::
@@ -215,7 +215,12 @@ object Scripts {
       OP_HASH160 :: OP_PUSHDATA(paymentHash) :: OP_EQUALVERIFY ::
       OP_2 :: OP_SWAP :: OP_PUSHDATA(localKey) :: OP_2 :: OP_CHECKMULTISIG ::
     OP_ELSE ::
-      OP_DROP :: encodeNumber(lockTime) :: OP_CHECKLOCKTIMEVERIFY :: OP_DROP :: OP_CHECKSIG ::
+      OP_SIZE :: OP_0 :: OP_EQUAL ::
+      OP_IF ::
+        OP_DROP :: encodeNumber(lockTime) :: OP_CHECKLOCKTIMEVERIFY :: OP_DROP :: OP_CHECKSIG ::
+      OP_ELSE ::
+        OP_SWAP :: OP_DROP :: OP_PUSHDATA(revocationPubKey) :: OP_CHECKSIG ::
+      OP_ENDIF ::
     OP_ENDIF :: Nil
     // @formatter:on
   }

@@ -60,6 +60,7 @@ class TransactionsSpec extends FunSuite {
     val localRevocationPriv = PrivateKey(BinaryData("cc" * 32), compressed = true)
     val localPaymentPriv = PrivateKey(BinaryData("dd" * 32), compressed = true)
     val remotePaymentPriv = PrivateKey(BinaryData("ee" * 32), compressed = true)
+    val remoteRevocationPriv = PrivateKey(BinaryData("ef" * 32), compressed = true)
     val localFinalPriv = PrivateKey(BinaryData("ff" * 32), compressed = true)
     val finalPubKeyScript = Script.pay2wpkh(PrivateKey(BinaryData("ff" * 32), compressed = true).publicKey)
     val toLocalDelay = 144
@@ -103,9 +104,9 @@ class TransactionsSpec extends FunSuite {
       // first we create a fake commitTx tx, containing only the output that will be spent by the ClaimHtlcSuccessTx
       val paymentPreimage = BinaryData("42" * 32)
       val htlc = UpdateAddHtlc(0, 0, Satoshi(20000).amount * 1000, expiry = 400144, sha256(paymentPreimage), BinaryData(""))
-      val pubKeyScript = write(pay2wsh(htlcOffered(localPaymentPriv.publicKey, remotePaymentPriv.publicKey, ripemd160(htlc.paymentHash))))
+      val pubKeyScript = write(pay2wsh(htlcOffered(localPaymentPriv.publicKey, remotePaymentPriv.publicKey, localRevocationPriv.publicKey, ripemd160(htlc.paymentHash))))
       val commitTx = Transaction(version = 0, txIn = Nil, txOut = TxOut(Satoshi(htlc.amountMsat / 1000), pubKeyScript) :: Nil, lockTime = 0)
-      val claimHtlcSuccessTx = makeClaimHtlcSuccessTx(commitTx, remotePaymentPriv.publicKey, localPaymentPriv.publicKey, finalPubKeyScript, htlc, feeRatePerKw)
+      val claimHtlcSuccessTx = makeClaimHtlcSuccessTx(commitTx, remotePaymentPriv.publicKey, localPaymentPriv.publicKey, localRevocationPriv.publicKey, finalPubKeyScript, htlc, feeRatePerKw)
       // we use dummy signatures to compute the weight
       val weight = Transaction.weight(addSigs(claimHtlcSuccessTx, "bb" * 71, paymentPreimage).tx)
       assert(claimHtlcSuccessWeight == weight)
@@ -116,9 +117,9 @@ class TransactionsSpec extends FunSuite {
       // first we create a fake commitTx tx, containing only the output that will be spent by the ClaimHtlcSuccessTx
       val paymentPreimage = BinaryData("42" * 32)
       val htlc = UpdateAddHtlc(0, 0, Satoshi(20000).amount * 1000, expiry = 400144, sha256(paymentPreimage), BinaryData(""))
-      val pubKeyScript = write(pay2wsh(htlcReceived(localPaymentPriv.publicKey, remotePaymentPriv.publicKey, ripemd160(htlc.paymentHash), htlc.expiry)))
+      val pubKeyScript = write(pay2wsh(htlcReceived(localPaymentPriv.publicKey, remotePaymentPriv.publicKey, localRevocationPriv.publicKey, ripemd160(htlc.paymentHash), htlc.expiry)))
       val commitTx = Transaction(version = 0, txIn = Nil, txOut = TxOut(Satoshi(htlc.amountMsat / 1000), pubKeyScript) :: Nil, lockTime = 0)
-      val claimClaimHtlcTimeoutTx = makeClaimHtlcTimeoutTx(commitTx, remotePaymentPriv.publicKey, localPaymentPriv.publicKey, finalPubKeyScript, htlc, feeRatePerKw)
+      val claimClaimHtlcTimeoutTx = makeClaimHtlcTimeoutTx(commitTx, remotePaymentPriv.publicKey, localPaymentPriv.publicKey, localRevocationPriv.publicKey, finalPubKeyScript, htlc, feeRatePerKw)
       // we use dummy signatures to compute the weight
       val weight = Transaction.weight(addSigs(claimClaimHtlcTimeoutTx, "bb" * 71).tx)
       assert(claimHtlcTimeoutWeight == weight)
@@ -131,6 +132,7 @@ class TransactionsSpec extends FunSuite {
     val localRevocationPriv = PrivateKey(BinaryData("cc" * 32) :+ 1.toByte)
     val localPaymentPriv = PrivateKey(BinaryData("dd" * 32) :+ 1.toByte)
     val remotePaymentPriv = PrivateKey(BinaryData("ee" * 32) :+ 1.toByte)
+    val remoteRevocationPriv = PrivateKey(BinaryData("cd" * 32) :+ 1.toByte)
     val finalPubKeyScript = Script.pay2wpkh(PrivateKey(BinaryData("ee" * 32), true).publicKey)
     val commitInput = Funding.makeFundingInputInfo(BinaryData("12" * 32), 0, Btc(1), localFundingPriv.publicKey, remoteFundingPriv.publicKey)
     val toLocalDelay = 144
@@ -190,7 +192,7 @@ class TransactionsSpec extends FunSuite {
 
     {
       // remote spends local->remote htlc output directly in case of success
-      val claimHtlcSuccessTx = makeClaimHtlcSuccessTx(commitTx.tx, remotePaymentPriv.publicKey, localPaymentPriv.publicKey, finalPubKeyScript, htlc1, feeRatePerKw)
+      val claimHtlcSuccessTx = makeClaimHtlcSuccessTx(commitTx.tx, remotePaymentPriv.publicKey, localPaymentPriv.publicKey, localRevocationPriv.publicKey, finalPubKeyScript, htlc1, feeRatePerKw)
       val localSig = sign(claimHtlcSuccessTx, remotePaymentPriv)
       val signed = addSigs(claimHtlcSuccessTx, localSig, paymentPreimage1)
       assert(checkSpendable(signed).isSuccess)
@@ -226,7 +228,7 @@ class TransactionsSpec extends FunSuite {
 
     {
       // remote spends remote->local htlc output directly in case of timeout
-      val claimHtlcTimeoutTx = makeClaimHtlcTimeoutTx(commitTx.tx, remotePaymentPriv.publicKey, localPaymentPriv.publicKey, finalPubKeyScript, htlc2, feeRatePerKw)
+      val claimHtlcTimeoutTx = makeClaimHtlcTimeoutTx(commitTx.tx, remotePaymentPriv.publicKey, localPaymentPriv.publicKey, localRevocationPriv.publicKey, finalPubKeyScript, htlc2, feeRatePerKw)
       val localSig = sign(claimHtlcTimeoutTx, remotePaymentPriv)
       val signed = addSigs(claimHtlcTimeoutTx, localSig)
       assert(checkSpendable(signed).isSuccess)
