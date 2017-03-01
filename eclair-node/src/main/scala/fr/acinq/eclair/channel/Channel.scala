@@ -962,6 +962,14 @@ class Channel(nodeParams: NodeParams, val r: ActorRef, val blockchain: ActorRef,
   }
 
   onTransition {
+    case OFFLINE -> OFFLINE => ()
+
+    case previousState -> OFFLINE =>
+      context.system.eventStream.publish(ChannelStateChanged(self, context.parent, remoteNodeId, previousState, OFFLINE, nextStateData))
+
+    case OFFLINE -> currentState =>
+      context.system.eventStream.publish(ChannelStateChanged(self, context.parent, remoteNodeId, OFFLINE, currentState, nextStateData))
+
     case previousState -> currentState =>
       if (currentState != previousState) {
         context.system.eventStream.publish(ChannelStateChanged(self, context.parent, remoteNodeId, previousState, currentState, nextStateData))

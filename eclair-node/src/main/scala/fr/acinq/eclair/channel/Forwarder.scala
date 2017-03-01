@@ -22,6 +22,7 @@ class Forwarder(nodeParams: NodeParams) extends Actor with ActorLogging {
   def receive = {
     case StoreAndForward(messages, destination, channelId, channelState) =>
       channelDb.put(channelId, ChannelRecord(channelId, channelState))
+      log.debug(s"persisiting channel $channelId state $channelState")
       messages.foreach(message => destination forward message)
       context become main(channelId)
   }
@@ -29,11 +30,13 @@ class Forwarder(nodeParams: NodeParams) extends Actor with ActorLogging {
   def main(currentChannelId: Long): Receive = {
     case StoreAndForward(messages, destination, channelId, channelState) if channelId != currentChannelId =>
       log.info(s"channel changed id: $currentChannelId -> $channelId")
+      log.debug(s"persisiting channel $channelId state $channelState")
       channelDb.put(channelId, ChannelRecord(channelId, channelState))
       channelDb.delete(currentChannelId)
       messages.foreach(message => destination forward message)
       context become main(channelId)
     case StoreAndForward(messages, destination, channelId, channelState) =>
+      log.debug(s"persisiting channel $channelId state $channelState")
       channelDb.put(channelId, ChannelRecord(channelId, channelState))
       messages.foreach(message => destination forward message)
   }

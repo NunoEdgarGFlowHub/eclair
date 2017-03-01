@@ -123,6 +123,11 @@ class Peer(nodeParams: NodeParams, remoteNodeId: PublicKey, address_opt: Option[
       //TODO: what if nextIds are different
       stay using d.copy(channels = channels - previousId + (nextId -> channel))
 
+    case Event(msg@FundingLocked(previousId, nextId, _), d@ConnectedData(_, _, channels)) if channels.contains(nextId) =>
+      val channel = channels(nextId)
+      channel forward msg
+      stay
+
     case Event(msg: HasTemporaryChannelId, ConnectedData(_, _, channels)) if channels.contains(msg.temporaryChannelId) =>
       val channel = channels(msg.temporaryChannelId)
       channel forward msg
