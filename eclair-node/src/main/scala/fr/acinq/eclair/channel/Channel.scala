@@ -126,29 +126,19 @@ class Channel(nodeParams: NodeParams, val r: ActorRef, val blockchain: ActorRef,
       context.system.eventStream.publish(ChannelRestored(self, context.parent, remoteNodeId, Helpers.getLocalParams(data).isFunder, Helpers.getChannelId(data), data))
       data match {
         // no need to go OFFLINE, we can directly switch to CLOSING
-        case closing: DATA_CLOSING if closing.localCommitPublished.isDefined =>
-          spendLocalCurrent(closing)
-
-        case closing: DATA_CLOSING if closing.mutualClosePublished.isDefined =>
-          publishMutualClosing(closing.mutualClosePublished.get)
-          goto(CLOSING) using closing
-
-        case closing: DATA_CLOSING if closing.remoteCommitPublished.isDefined =>
-          handleRemoteSpentCurrent(closing.remoteCommitPublished.get.commitTx, closing)
-          goto(CLOSING) using closing
-
-        case closing: DATA_CLOSING if closing.nextRemoteCommitPublished.isDefined =>
-          handleRemoteSpentNext(closing.nextRemoteCommitPublished.get.commitTx, closing)
-          goto(CLOSING) using closing
-
-        case closing: DATA_CLOSING if !closing.revokedCommitPublished.isEmpty =>
+        case closing: DATA_CLOSING =>
+          if (closing.localCommitPublished.isDefined) spendLocalCurrent(closing)
+          if (closing.mutualClosePublished.isDefined) publishMutualClosing(closing.mutualClosePublished.get)
+          if (closing.remoteCommitPublished.isDefined) handleRemoteSpentCurrent(closing.remoteCommitPublished.get.commitTx, closing)
+          if (closing.nextRemoteCommitPublished.isDefined) handleRemoteSpentCurrent(closing.remoteCommitPublished.get.commitTx, closing)
           closing.revokedCommitPublished.map(revokedCommitPublished => {
             handleRemoteSpentOther(revokedCommitPublished.commitTx, closing)
           })
           goto(CLOSING) using closing
 
-        case closing: DATA_CLOSING =>
-          goto(CLOSING) using closing
+        case d: DATA_WAIT_FOR_FUNDING_LOCKED =>
+          blockchain ! WatchSpent(self, d.commitments.commitInput.outPoint.txid, d.commitments.commitInput.outPoint.index.toInt, BITCOIN_FUNDING_SPENT) // TODO: should we wait for an acknowledgment from the watcher?
+          goto(OFFLINE) using data
 
         case d: HasCommitments =>
           blockchain ! WatchSpent(self, d.commitments.commitInput.outPoint.txid, d.commitments.commitInput.outPoint.index.toInt, BITCOIN_FUNDING_SPENT) // TODO: should we wait for an acknowledgment from the watcher?
