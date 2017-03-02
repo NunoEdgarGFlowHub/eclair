@@ -1,5 +1,6 @@
 package fr.acinq.eclair.channel
 
+import akka.actor.Status.Failure
 import akka.actor.{Actor, ActorContext, ActorLogging, ActorPath, ActorRef, ActorSystem, Props, Terminated}
 import fr.acinq.bitcoin.Crypto.PublicKey
 
@@ -50,6 +51,12 @@ class Register extends Actor with ActorLogging {
       context become main(channels - channelId)
 
     case 'channels => sender ! channels
+
+    case ('forward, channelId: String, msg: Any) =>
+      channels.get(channelId) match {
+        case Some(channel) => channel forward msg
+        case None => sender ! Failure(new RuntimeException(s"channel $channelId not found"))
+      }
   }
 }
 
