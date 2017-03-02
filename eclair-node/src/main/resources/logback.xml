@@ -8,7 +8,6 @@
         </encoder>
     </appender>
 
-    <logger name="fr.acinq.eclair.channel" level="DEBUG"/>
     <logger name="fr.acinq.eclair.channel.Register" level="DEBUG"/>
     <logger name="fr.acinq.eclair.crypto.TransportHandler" level="INFO"/>
     <logger name="fr.acinq.eclair.router" level="DEBUG"/>
