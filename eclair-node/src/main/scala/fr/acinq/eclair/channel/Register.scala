@@ -62,21 +62,6 @@ class Register extends Actor with ActorLogging {
 
 object Register {
 
-  /**
-    * Once it reaches NORMAL state, channel creates a [[fr.acinq.eclair.channel.AliasActor]]
-    * which name is counterparty_id-anchor_id
-    */
-  def createAlias(nodeId: PublicKey, channelId: Long)(implicit context: ActorContext) =
-    context.actorOf(Props(new AliasActor(context.self)), name = s"${nodeId.toBin}-${java.lang.Long.toHexString(channelId)}")
-
-  def actorPathToChannels(system: ActorSystem): ActorPath =
-    system / "switchboard" / "peer-*" / "*"
-
-  def actorPathToChannel(system: ActorSystem, channelId: Long): ActorPath =
-    system / "switchboard" / "peer-*" / "*" / s"*-${java.lang.Long.toHexString(channelId)}"
-
-  def actorPathToChannel(channelId: Long)(implicit context: ActorContext): ActorPath = actorPathToChannel(context.system, channelId)
-
   def actorPathToPeers()(implicit context: ActorContext): ActorPath =
     context.system / "switchboard" / "peer-*"
 
