@@ -142,7 +142,6 @@ class Channel(nodeParams: NodeParams, val r: ActorRef, val blockchain: ActorRef,
 
         case d: HasCommitments =>
           blockchain ! WatchSpent(self, d.commitments.commitInput.outPoint.txid, d.commitments.commitInput.outPoint.index.toInt, BITCOIN_FUNDING_SPENT) // TODO: should we wait for an acknowledgment from the watcher?
-          Register.createAlias(remoteNodeId, d.commitments.channelId)
           goto(OFFLINE) using data
 
         case unexpected => log.error(s"restoring channel with unexpected state: $unexpected")
@@ -371,7 +370,6 @@ class Channel(nodeParams: NodeParams, val r: ActorRef, val blockchain: ActorRef,
 
     case Event(FundingLocked(_, _, nextPerCommitmentPoint), d@DATA_WAIT_FOR_FUNDING_LOCKED(commitments, _)) =>
       log.info(s"channelId=${java.lang.Long.toUnsignedString(d.channelId)}")
-      Register.createAlias(remoteNodeId, d.channelId)
       context.system.eventStream.publish(ChannelIdAssigned(self, d.channelId))
       // this clock will be used to detect htlc timeouts
       context.system.eventStream.subscribe(self, classOf[CurrentBlockCount])
@@ -802,86 +800,29 @@ class Channel(nodeParams: NodeParams, val r: ActorRef, val blockchain: ActorRef,
   }
 
   when(OFFLINE) {
-    case Event(INPUT_RECONNECTED(r), d: DATA_WAIT_FOR_OPEN_CHANNEL) =>
+    case Event(INPUT_RECONNECTED(r), d: HasCommitments) =>
       remote = r
-      goto(WAIT_FOR_OPEN_CHANNEL)
-
-    case Event(INPUT_RECONNECTED(r), d: DATA_WAIT_FOR_ACCEPT_CHANNEL) =>
-      remote = r
-      remote ! d.lastSent
-      goto(WAIT_FOR_ACCEPT_CHANNEL)
-
-    case Event(INPUT_RECONNECTED(r), d@DATA_WAIT_FOR_FUNDING_INTERNAL(temporaryChannelId, localParams, remoteParams, fundingSatoshis, pushMsat, _, lastSent)) =>
-      remote = r
-      remote ! d.lastSent
-      // in this particular case we need to go to previous state because of the internal funding request to our wallet
-      // let's rebuild the previous state data
-      val remoteInit = Init(remoteParams.globalFeatures, remoteParams.localFeatures)
-      val initFunder = INPUT_INIT_FUNDER(remoteNodeId, temporaryChannelId, fundingSatoshis, pushMsat, localParams, remoteInit)
-      goto(WAIT_FOR_ACCEPT_CHANNEL) using DATA_WAIT_FOR_ACCEPT_CHANNEL(initFunder, lastSent)
-
-    case Event(INPUT_RECONNECTED(r), d: DATA_WAIT_FOR_FUNDING_CREATED) =>
-      remote = r
-      remote ! d.lastSent
-      goto(WAIT_FOR_FUNDING_CREATED)
-
-    case Event(INPUT_RECONNECTED(r), d: DATA_WAIT_FOR_FUNDING_SIGNED) =>
-      remote = r
-      remote ! d.lastSent
-      goto(WAIT_FOR_FUNDING_SIGNED)
-
-    case Event(INPUT_RECONNECTED(r), DATA_WAIT_FOR_FUNDING_CONFIRMED(_, commitments, _, Left(fundingCreated))) =>
-      remote = r
-      remote ! fundingCreated
-      blockchain ! WatchConfirmed(self, commitments.commitInput.outPoint.txid, nodeParams.minDepthBlocks, BITCOIN_FUNDING_DEPTHOK)
-      goto(WAIT_FOR_FUNDING_CONFIRMED)
-
-    case Event(INPUT_RECONNECTED(r), DATA_WAIT_FOR_FUNDING_CONFIRMED(_, commitments, _, Right(fundingSigned))) =>
-      remote = r
-      remote ! fundingSigned
-      blockchain ! WatchConfirmed(self, commitments.commitInput.outPoint.txid, nodeParams.minDepthBlocks, BITCOIN_FUNDING_DEPTHOK)
-      goto(WAIT_FOR_FUNDING_CONFIRMED)
-
-    case Event(INPUT_RECONNECTED(r), d: DATA_WAIT_FOR_FUNDING_LOCKED) =>
-      remote = r
-      remote ! d.lastSent
-      goto(WAIT_FOR_FUNDING_LOCKED)
-
-    case Event(INPUT_RECONNECTED(r), d: DATA_WAIT_FOR_ANN_SIGNATURES) =>
-      remote = r
-      remote ! d.lastSent
-      goto(WAIT_FOR_ANN_SIGNATURES)
-
-    case Event(INPUT_RECONNECTED(r), d: DATA_NORMAL) if d.commitments.localCommit.index == 0 && d.commitments.remoteCommit.index == 0 && d.commitments.remoteChanges.proposed.size == 0 && d.commitments.remoteNextCommitInfo.isRight =>
-      remote = r
-      // this is a brand new channel
-      if (Funding.announceChannel(d.commitments.localParams.localFeatures, d.commitments.remoteParams.localFeatures)) {
-        val (localNodeSig, localBitcoinSig) = Announcements.signChannelAnnouncement(d.channelId, nodeParams.privateKey, remoteNodeId, d.commitments.localParams.fundingPrivKey, d.commitments.remoteParams.fundingPubKey)
-        val annSignatures = AnnouncementSignatures(d.channelId, localNodeSig, localBitcoinSig)
-        remote ! annSignatures
-      } else {
-        // TODO: not supported
+      d match {
+        case r: ResendOnReconnection => r.resendOnReconnection.map(msg => remote ! msg)
+        case _ => ()
       }
-      goto(NORMAL)
-
-    case Event(INPUT_RECONNECTED(r), d@DATA_NORMAL(commitments, _)) =>
-      remote = r
-      log.info(s"resuming with ${Commitments.changes2String(commitments)}")
-      //val resend = commitments.unackedMessages.filterNot(_.isInstanceOf[RevokeAndAck])
-      val resend = commitments.unackedMessages //.filterNot(_.isInstanceOf[RevokeAndAck])
-      log.info(s"re-sending: ${resend.map(Commitments.msg2String(_)).mkString(" ")}")
-      resend.foreach(remote ! _)
-      if (Commitments.localHasChanges(commitments)) {
-        // if we have newly acknowledged changes let's sign them
-        self ! CMD_SIGN
+      d match {
+        case _: DATA_WAIT_FOR_FUNDING_CONFIRMED =>
+          // we put back the watch (operation is idempotent) because the event may have been fired while we were in OFFLINE
+          blockchain ! WatchConfirmed(self, d.commitments.commitInput.outPoint.txid, nodeParams.minDepthBlocks, BITCOIN_FUNDING_DEPTHOK)
+          goto(WAIT_FOR_FUNDING_CONFIRMED)
+        case _: DATA_WAIT_FOR_FUNDING_LOCKED => goto(WAIT_FOR_FUNDING_LOCKED)
+        case _: DATA_WAIT_FOR_ANN_SIGNATURES => goto(WAIT_FOR_ANN_SIGNATURES)
+        case _: DATA_NORMAL =>
+          if (Commitments.localHasChanges(d.commitments)) {
+            // if we have newly acknowledged changes let's sign them
+            self ! CMD_SIGN
+          }
+          goto(NORMAL)
+        case _: DATA_SHUTDOWN => goto(SHUTDOWN)
+        case _: DATA_NEGOTIATING => goto(NEGOTIATING)
+        case _: DATA_CLOSING => goto(CLOSING)
       }
-      goto(NORMAL)
-
-    case Event(INPUT_RECONNECTED(r), d: DATA_NEGOTIATING) =>
-      goto(NEGOTIATING) using (d)
-
-    case Event(INPUT_RECONNECTED(r), d: DATA_CLOSING) =>
-      goto(CLOSING) using (d)
 
     case Event(c@CMD_ADD_HTLC(amountMsat, rHash, expiry, route, downstream_opt, do_commit), d@DATA_NORMAL(commitments, _)) =>
       log.info(s"we are disconnected so we just include the add in our commitments")
