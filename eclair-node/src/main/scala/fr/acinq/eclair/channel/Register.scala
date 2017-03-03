@@ -27,7 +27,9 @@ import fr.acinq.bitcoin.Crypto.PublicKey
 
 class Register extends Actor with ActorLogging {
 
-  context.system.eventStream.subscribe(self, classOf[ChannelStateChanged])
+  import Register._
+
+  context.system.eventStream.subscribe(self, classOf[ChannelEvent])
 
   override def receive: Receive = main(Map())
 
@@ -52,11 +54,11 @@ class Register extends Actor with ActorLogging {
 
     case 'channels => sender ! channels
 
-    case ('forward, channelId: String, msg: Any) =>
-      channels.get(channelId) match {
-        case Some(channel) => channel forward msg
-        case None => sender ! Failure(new RuntimeException(s"channel $channelId not found"))
-      }
+    case Forward(channelId, msg) if !channels.contains(java.lang.Long.toHexString(channelId)) =>
+      sender ! Failure(new RuntimeException(s"channel $channelId not found"))
+
+    case Forward(channelId, msg) =>
+      channels(java.lang.Long.toHexString(channelId)) forward msg
   }
 }
 
@@ -67,5 +69,7 @@ object Register {
 
   def actorPathToPeer(system: ActorSystem, nodeId: PublicKey): ActorPath =
     system / "switchboard" / s"peer-${nodeId.toBin}"
+
+  case class Forward(channelId: Long, message: Any)
 
 }
