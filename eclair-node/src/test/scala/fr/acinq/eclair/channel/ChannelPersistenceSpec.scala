@@ -30,16 +30,16 @@ class ChannelPersistenceSpec extends TestkitBaseClass with StateTestsHelperMetho
     val relayerA = system.actorOf(Relayer.props(Alice.nodeParams.privateKey, paymentHandlerA), "relayer-a")
     val relayerB = system.actorOf(Relayer.props(Bob.nodeParams.privateKey, paymentHandlerB), "relayer-b")
     val router = TestProbe()
-    val alice: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(Alice.nodeParams, pipe, alice2blockchain.ref, router.ref, relayerA))
-    val bob: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(Bob.nodeParams, pipe, bob2blockchain.ref, router.ref, relayerB))
+    val alice: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(Alice.nodeParams, Alice.id, alice2blockchain.ref, router.ref, relayerA))
+    val bob: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(Bob.nodeParams, Bob.id, bob2blockchain.ref, router.ref, relayerB))
 
     within(30 seconds) {
       val aliceInit = Init(Alice.channelParams.globalFeatures, Alice.channelParams.localFeatures)
       val bobInit = Init(Bob.channelParams.globalFeatures, Bob.channelParams.localFeatures)
       relayerA ! alice
       relayerB ! bob
-      alice ! INPUT_INIT_FUNDER(Bob.id, 4242, TestConstants.fundingSatoshis, TestConstants.pushMsat, Alice.channelParams, bobInit)
-      bob ! INPUT_INIT_FUNDEE(Alice.id, 4242, Bob.channelParams, aliceInit)
+      alice ! INPUT_INIT_FUNDER(4242, TestConstants.fundingSatoshis, TestConstants.pushMsat, Alice.channelParams, pipe, bobInit)
+      bob ! INPUT_INIT_FUNDEE(4242, Bob.channelParams, pipe, aliceInit)
       pipe ! (alice, bob)
       alice2blockchain.expectMsgType[MakeFundingTx]
       alice2blockchain.forward(blockchainA)
@@ -57,8 +57,8 @@ class ChannelPersistenceSpec extends TestkitBaseClass with StateTestsHelperMetho
 
   test("persist/restore channel in WAIT_FOR_FUNDING_CONFIRMED state, reconnect then confirm") {
     case (alice, alice2blockchain, blockchainA, bob, bob2blockchain, pipe, relayerA, relayerB, paymentHandlerA, paymentHandlerB) =>
-      val dbA = Channel.makeChannelDb(Alice.nodeParams.db)
-      val dbB = Channel.makeChannelDb(Bob.nodeParams.db)
+      val dbA = Alice.nodeParams.channelsDb
+      val dbB = Bob.nodeParams.channelsDb
 
       within(30 seconds) {
 
@@ -72,14 +72,14 @@ class ChannelPersistenceSpec extends TestkitBaseClass with StateTestsHelperMetho
         // restore channels
         val pipe1 = system.actorOf(Props(new Pipe()))
         val router = TestProbe()
-        val alice1: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(Alice.nodeParams, pipe1, alice2blockchain.ref, router.ref, relayerA))
-        val bob1: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(Bob.nodeParams, pipe1, bob2blockchain.ref, router.ref, relayerB))
+        val alice1: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(Alice.nodeParams, Alice.id, alice2blockchain.ref, router.ref, relayerA))
+        val bob1: TestFSMRef[State, Data, Channel] = TestFSMRef(new Channel(Bob.nodeParams, Bob.id, bob2blockchain.ref, router.ref, relayerB))
         pipe1 ! (alice1, bob1)
 
         awaitCond(!dbA.values.isEmpty)
 
-        alice1 ! INPUT_RESTORED(dbA.values.headOption.get.id, dbA.values.headOption.get.state)
-        bob1 ! INPUT_RESTORED(dbB.values.headOption.get.id, dbB.values.headOption.get.state)
+        alice1 ! INPUT_RESTORED(dbA.values.head)
+        bob1 ! INPUT_RESTORED(dbB.values.head)
 
         // reconnect
         alice1 ! INPUT_RECONNECTED(pipe1)
@@ -90,12 +90,13 @@ class ChannelPersistenceSpec extends TestkitBaseClass with StateTestsHelperMetho
 
         // confirm funding tx
         alice2blockchain.expectMsgType[WatchSpent]
+        alice2blockchain.expectMsgType[WatchLost]
         alice2blockchain.expectMsgType[WatchConfirmed]
         alice2blockchain.forward(blockchainA)
         awaitCond(alice1.stateName == WAIT_FOR_FUNDING_LOCKED)
 
         bob2blockchain.expectMsgType[WatchSpent]
-        bob2blockchain.expectMsgType[WatchConfirmed]
+        alice2blockchain.expectMsgType[WatchLost]
         bob1 ! WatchEventConfirmed(BITCOIN_FUNDING_DEPTHOK, 400000, 42)
 
         awaitCond(alice1.stateName == NORMAL)

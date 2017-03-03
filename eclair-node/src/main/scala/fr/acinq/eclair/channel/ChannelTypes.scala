@@ -3,7 +3,6 @@ package fr.acinq.eclair.channel
 import akka.actor.ActorRef
 import fr.acinq.bitcoin.Crypto.{Point, PrivateKey, PublicKey, Scalar}
 import fr.acinq.bitcoin.{BinaryData, Transaction}
-import fr.acinq.eclair.db.ChannelState
 import fr.acinq.eclair.transactions.CommitmentSpec
 import fr.acinq.eclair.transactions.Transactions.CommitTx
 import fr.acinq.eclair.wire.{AcceptChannel, AnnouncementSignatures, ClosingSigned, FundingCreated, FundingLocked, FundingSigned, Init, LightningMessage, OpenChannel, Shutdown, UpdateAddHtlc}
@@ -56,14 +55,14 @@ case object ERR_INFORMATION_LEAK extends State
       8888888888     Y8P     8888888888 888    Y888     888     "Y8888P"
  */
 
-case class INPUT_INIT_FUNDER(remoteNodeId: PublicKey, temporaryChannelId: Long, fundingSatoshis: Long, pushMsat: Long, localParams: LocalParams, remoteInit: Init)
-case class INPUT_INIT_FUNDEE(remoteNodeId: PublicKey, temporaryChannelId: Long, localParams: LocalParams, remoteInit: Init)
+case class INPUT_INIT_FUNDER(temporaryChannelId: Long, fundingSatoshis: Long, pushMsat: Long, localParams: LocalParams, remote: ActorRef, remoteInit: Init)
+case class INPUT_INIT_FUNDEE(temporaryChannelId: Long, localParams: LocalParams, remote: ActorRef, remoteInit: Init)
 case object INPUT_NO_MORE_HTLCS
 // when requesting a mutual close, we wait for as much as this timeout, then unilateral close
 case object INPUT_CLOSE_COMPLETE_TIMEOUT
 case object INPUT_DISCONNECTED
 case class INPUT_RECONNECTED(remote: ActorRef)
-case class INPUT_RESTORED(channelId: Long, channelstate: ChannelState)
+case class INPUT_RESTORED(data: HasCommitments)
 
 sealed trait BitcoinEvent
 case object BITCOIN_FUNDING_DEPTHOK extends BitcoinEvent
@@ -116,15 +115,10 @@ sealed trait Data
 
 case object Nothing extends Data
 
-
-trait ResendOnReconnection {
-  // messages to be re-sent when the channel is reconnected
-  def resendOnReconnection: Seq[LightningMessage] = Nil
-}
-
 trait HasCommitments extends Data {
   def commitments: Commitments
   def channelId = commitments.channelId
+  def resendOnReconnection: Seq[LightningMessage] = Nil
 }
 
 case class LocalCommitPublished(commitTx: Transaction, claimMainDelayedOutputTx: Option[Transaction], htlcSuccessTxs: Seq[Transaction], htlcTimeoutTxs: Seq[Transaction], claimHtlcDelayedTx: Seq[Transaction])
@@ -133,25 +127,19 @@ case class RevokedCommitPublished(commitTx: Transaction, claimMainOutputTx: Opti
 
 final case class DATA_WAIT_FOR_OPEN_CHANNEL(initFundee: INPUT_INIT_FUNDEE) extends Data
 final case class DATA_WAIT_FOR_ACCEPT_CHANNEL(initFunder: INPUT_INIT_FUNDER, lastSent: OpenChannel) extends Data
-final case class DATA_WAIT_FOR_FUNDING_INTERNAL(temporaryChannelId: Long, localParams: LocalParams, remoteParams: RemoteParams, fundingSatoshis: Long, pushMsat: Long, remoteFirstPerCommitmentPoint: Point, lastSent: OpenChannel) extends Data with ResendOnReconnection {
-  override def resendOnReconnection = Seq(lastSent)
-}
-final case class DATA_WAIT_FOR_FUNDING_CREATED(temporaryChannelId: Long, localParams: LocalParams, remoteParams: RemoteParams, fundingSatoshis: Long, pushMsat: Long, remoteFirstPerCommitmentPoint: Point, lastSent: AcceptChannel) extends Data  with ResendOnReconnection {
-  override def resendOnReconnection = Seq(lastSent)
-}
-final case class DATA_WAIT_FOR_FUNDING_SIGNED(temporaryChannelId: Long, localParams: LocalParams, remoteParams: RemoteParams, fundingTx: Transaction, localSpec: CommitmentSpec, localCommitTx: CommitTx, remoteCommit: RemoteCommit, lastSent: FundingCreated) extends Data  with ResendOnReconnection {
-  override def resendOnReconnection = Seq(lastSent)
-}
-final case class DATA_WAIT_FOR_FUNDING_CONFIRMED(temporaryChannelId: Long, commitments: Commitments, deferred: Option[FundingLocked], lastSent: Either[FundingCreated, FundingSigned]) extends Data with HasCommitments  with ResendOnReconnection {
+final case class DATA_WAIT_FOR_FUNDING_INTERNAL(temporaryChannelId: Long, localParams: LocalParams, remoteParams: RemoteParams, fundingSatoshis: Long, pushMsat: Long, remoteFirstPerCommitmentPoint: Point, lastSent: OpenChannel) extends Data
+final case class DATA_WAIT_FOR_FUNDING_CREATED(temporaryChannelId: Long, localParams: LocalParams, remoteParams: RemoteParams, fundingSatoshis: Long, pushMsat: Long, remoteFirstPerCommitmentPoint: Point, lastSent: AcceptChannel) extends Data
+final case class DATA_WAIT_FOR_FUNDING_SIGNED(temporaryChannelId: Long, localParams: LocalParams, remoteParams: RemoteParams, fundingTx: Transaction, localSpec: CommitmentSpec, localCommitTx: CommitTx, remoteCommit: RemoteCommit, lastSent: FundingCreated) extends Data
+final case class DATA_WAIT_FOR_FUNDING_CONFIRMED(temporaryChannelId: Long, commitments: Commitments, deferred: Option[FundingLocked], lastSent: Either[FundingCreated, FundingSigned]) extends Data with HasCommitments {
   override def resendOnReconnection = lastSent.right.toSeq
 }
-final case class DATA_WAIT_FOR_FUNDING_LOCKED(commitments: Commitments, lastSent: FundingLocked) extends Data with HasCommitments  with ResendOnReconnection {
+final case class DATA_WAIT_FOR_FUNDING_LOCKED(commitments: Commitments, lastSent: FundingLocked) extends Data with HasCommitments {
   override def resendOnReconnection = Seq(lastSent)
 }
-final case class DATA_WAIT_FOR_ANN_SIGNATURES(commitments: Commitments, lastSent: AnnouncementSignatures) extends Data with HasCommitments  with ResendOnReconnection {
+final case class DATA_WAIT_FOR_ANN_SIGNATURES(commitments: Commitments, lastSent: AnnouncementSignatures) extends Data with HasCommitments {
   override def resendOnReconnection = Seq(lastSent)
 }
-final case class DATA_NORMAL(commitments: Commitments, unackedShutdown: Option[Shutdown]) extends Data with HasCommitments  with ResendOnReconnection {
+final case class DATA_NORMAL(commitments: Commitments) extends Data with HasCommitments {
   override def resendOnReconnection: Seq[LightningMessage] = commitments.unackedMessages
 }
 final case class DATA_SHUTDOWN(commitments: Commitments,
@@ -159,7 +147,6 @@ final case class DATA_SHUTDOWN(commitments: Commitments,
 final case class DATA_NEGOTIATING(commitments: Commitments,
                                   localShutdown: Shutdown, remoteShutdown: Shutdown, localClosingSigned: ClosingSigned) extends Data with HasCommitments
 final case class DATA_CLOSING(commitments: Commitments,
-                              ourSignature: Option[ClosingSigned] = None,
                               mutualClosePublished: Option[Transaction] = None,
                               localCommitPublished: Option[LocalCommitPublished] = None,
                               remoteCommitPublished: Option[RemoteCommitPublished] = None,
@@ -168,7 +155,8 @@ final case class DATA_CLOSING(commitments: Commitments,
   require(mutualClosePublished.isDefined || localCommitPublished.isDefined || remoteCommitPublished.isDefined || nextRemoteCommitPublished.isDefined || revokedCommitPublished.size > 0, "there should be at least one tx published in this state")
 }
 
-final case class LocalParams(dustLimitSatoshis: Long,
+final case class LocalParams(nodeId: PublicKey,
+                             dustLimitSatoshis: Long,
                              maxHtlcValueInFlightMsat: Long,
                              channelReserveSatoshis: Long,
                              htlcMinimumMsat: Long,
@@ -185,7 +173,8 @@ final case class LocalParams(dustLimitSatoshis: Long,
                              globalFeatures: BinaryData,
                              localFeatures: BinaryData)
 
-final case class RemoteParams(dustLimitSatoshis: Long,
+final case class RemoteParams(nodeId: PublicKey,
+                              dustLimitSatoshis: Long,
                               maxHtlcValueInFlightMsat: Long,
                               channelReserveSatoshis: Long,
                               htlcMinimumMsat: Long,

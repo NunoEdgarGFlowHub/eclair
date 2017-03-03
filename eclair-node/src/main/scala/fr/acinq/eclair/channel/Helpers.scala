@@ -26,23 +26,13 @@ object Helpers {
     * @return
     */
   def getChannelId(stateData: Data): Long = stateData match {
-    case Nothing => ???
+    case Nothing => -1
     case d: DATA_WAIT_FOR_OPEN_CHANNEL => d.initFundee.temporaryChannelId
     case d: DATA_WAIT_FOR_ACCEPT_CHANNEL => d.initFunder.temporaryChannelId
     case d: DATA_WAIT_FOR_FUNDING_INTERNAL => d.temporaryChannelId
     case d: DATA_WAIT_FOR_FUNDING_CREATED => d.temporaryChannelId
     case d: DATA_WAIT_FOR_FUNDING_SIGNED => d.temporaryChannelId
     case d: HasCommitments => d.channelId
-  }
-
-  def getLocalParams(stateData: Data): LocalParams = stateData match {
-    case Nothing => ???
-    case d: DATA_WAIT_FOR_OPEN_CHANNEL => d.initFundee.localParams
-    case d: DATA_WAIT_FOR_ACCEPT_CHANNEL => d.initFunder.localParams
-    case d: DATA_WAIT_FOR_FUNDING_INTERNAL => d.localParams
-    case d: DATA_WAIT_FOR_FUNDING_CREATED => d.localParams
-    case d: DATA_WAIT_FOR_FUNDING_SIGNED => d.localParams
-    case d: HasCommitments => d.commitments.localParams
   }
 
   def validateParams(nodeParams: NodeParams, channelReserveSatoshis: Long, fundingSatoshis: Long): Unit = {

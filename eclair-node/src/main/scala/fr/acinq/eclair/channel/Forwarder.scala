@@ -2,42 +2,43 @@ package fr.acinq.eclair.channel
 
 import akka.actor.{Actor, ActorLogging, ActorRef}
 import fr.acinq.eclair.NodeParams
-import fr.acinq.eclair.db.ChannelState
-import fr.acinq.eclair.wire.LightningMessage
+import fr.acinq.eclair.db.Dbs
+import fr.acinq.eclair.wire.{LightningMessage, Error}
 
 /**
   * Created by fabrice on 27/02/17.
   */
 
-case class StoreAndForward(messages: Seq[LightningMessage], destination: ActorRef, channelId: Long, channelState: ChannelState)
-
-object StoreAndForward {
-  def apply(message: LightningMessage, destination: ActorRef, channelId: Long, channelState: ChannelState) = new StoreAndForward(Seq(message), destination, channelId, channelState)
-}
+case class StoreAndForward(messages: Seq[LightningMessage], data: HasCommitments)
 
 class Forwarder(nodeParams: NodeParams) extends Actor with ActorLogging {
-  val db = nodeParams.db
-  val channelDb = Channel.makeChannelDb(db)
 
   def receive = {
-    case StoreAndForward(messages, destination, channelId, channelState) =>
-      channelDb.put(channelId, ChannelRecord(channelId, channelState))
-      log.debug(s"persisiting channel $channelId state $channelState")
-      messages.foreach(message => destination forward message)
-      context become main(channelId)
+    case destination: ActorRef => context become main(destination)
   }
 
-  def main(currentChannelId: Long): Receive = {
-    case StoreAndForward(messages, destination, channelId, channelState) if channelId != currentChannelId =>
-      log.info(s"channel changed id: $currentChannelId -> $channelId")
-      log.debug(s"persisiting channel $channelId state $channelState")
-      channelDb.put(channelId, ChannelRecord(channelId, channelState))
-      channelDb.delete(currentChannelId)
-      messages.foreach(message => destination forward message)
-      context become main(channelId)
-    case StoreAndForward(messages, destination, channelId, channelState) =>
-      log.debug(s"persisiting channel $channelId state $channelState")
-      channelDb.put(channelId, ChannelRecord(channelId, channelState))
-      messages.foreach(message => destination forward message)
+  def main(destination: ActorRef, channelId: Option[Long] = None): Receive = {
+
+    case destination: ActorRef => context become main(destination, channelId)
+
+    case error: Error => destination forward error
+
+    case msg: LightningMessage => destination forward msg
+
+    case StoreAndForward(messages, data) =>
+      if (messages.size > 0) {
+        log.debug(s"sending ${messages.map(_.getClass.getSimpleName).mkString(" ")}")
+        messages.foreach(destination forward _)
+      }
+      val nextId = Helpers.getChannelId(data)
+      nodeParams.channelsDb.put(nextId, data)
+
+      channelId.map(previousId => {
+        if (previousId != nextId) {
+          nodeParams.channelsDb.delete(previousId)
+        }
+      })
+      context become main(destination, Some(nextId))
   }
 }
+

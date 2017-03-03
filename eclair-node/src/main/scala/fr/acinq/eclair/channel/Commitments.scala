@@ -38,7 +38,6 @@ case class Commitments(localParams: LocalParams, remoteParams: RemoteParams,
                        unackedMessages: Seq[LightningMessage],
                        commitInput: InputInfo,
                        remotePerCommitmentSecrets: ShaChain, channelId: Long) {
-  def anchorId: BinaryData = commitInput.outPoint.txid
 
   def hasNoPendingHtlcs: Boolean = localCommit.spec.htlcs.isEmpty && remoteCommit.spec.htlcs.isEmpty
 
@@ -51,6 +50,8 @@ case class Commitments(localParams: LocalParams, remoteParams: RemoteParams,
   def addRemoteProposal(proposal: UpdateMessage): Commitments = Commitments.addRemoteProposal(this, proposal)
 
   def addToUnackedMessages(message: LightningMessage) : Commitments = this.copy(unackedMessages = unackedMessages :+ message)
+
+  def unackedShutdown(): Option[Shutdown] = this.unackedMessages.collectFirst{ case d: Shutdown => d}
 }
 
 object Commitments extends Logging {

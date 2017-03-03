@@ -4,11 +4,10 @@ import java.net.InetSocketAddress
 
 import akka.actor.{Actor, ActorLogging, ActorRef, Props, Status, Terminated}
 import fr.acinq.bitcoin.Crypto.PublicKey
-import fr.acinq.bitcoin.{BinaryData, MilliSatoshi, Satoshi, ScriptElt}
-import fr.acinq.eclair.channel.ChannelRecord
-import fr.acinq.eclair.{Globals, NodeParams}
+import fr.acinq.bitcoin.{BinaryData, MilliSatoshi, Satoshi}
+import fr.acinq.eclair.NodeParams
+import fr.acinq.eclair.channel.HasCommitments
 import fr.acinq.eclair.crypto.TransportHandler.HandshakeCompleted
-import fr.acinq.eclair.db.{ChannelState, SimpleDb}
 
 /**
   * Ties network connections to peers.
@@ -18,27 +17,22 @@ class Switchboard(nodeParams: NodeParams, watcher: ActorRef, router: ActorRef, r
 
   import Switchboard._
 
-  def db = nodeParams.db
-
-  val peerDb = Peer.makePeerDb(db)
-
   def receive: Receive = main(Map(), Map())
-
 
   def main(peers: Map[PublicKey, ActorRef], connections: Map[PublicKey, ActorRef]): Receive = {
 
-    case PeerRecord(publicKey, address) if peers.contains(publicKey) => ()
+    case PeerRecord(remoteNodeId, address) =>
+      val peer = createOrGetPeer(peers, remoteNodeId, Some(address))
+      context become main(peers + (remoteNodeId -> peer), connections)
 
-    case PeerRecord(publicKey, address) =>
-      val peer = createPeer(publicKey, address)
-      context become main(peers + (publicKey -> peer), connections)
-
-    case ChannelRecord(id, ChannelState(remotePubKey, _, _)) if !peers.contains(remotePubKey) =>
-      log.warning(s"received channel data for unknown peer $remotePubKey")
-
-    case channelRecord: ChannelRecord => peers(channelRecord.state.remotePubKey) forward channelRecord
+    case channelState: HasCommitments =>
+      val remoteNodeId = channelState.commitments.remoteParams.nodeId
+      val peer = createOrGetPeer(peers, remoteNodeId, None)
+      peer forward channelState
+      context become main(peers + (remoteNodeId -> peer), connections)
 
     case NewConnection(publicKey, _, _) if publicKey == nodeParams.privateKey.publicKey =>
+      sender ! Status.Failure(new RuntimeException("cannot open connection with oneself"))
 
     case NewConnection(remoteNodeId, address, newChannel_opt) =>
       val connection = connections.get(remoteNodeId) match {
@@ -52,10 +46,7 @@ class Switchboard(nodeParams: NodeParams, watcher: ActorRef, router: ActorRef, r
           context watch (connection)
           connection
       }
-      val peer = peers.get(remoteNodeId) match {
-        case Some(peer) => peer
-        case None => createPeer(remoteNodeId, Some(address))
-      }
+      val peer = createOrGetPeer(peers, remoteNodeId, Some(address))
       newChannel_opt.foreach(peer forward _)
       context become main(peers + (remoteNodeId -> peer), connections + (remoteNodeId -> connection))
 
@@ -64,8 +55,14 @@ class Switchboard(nodeParams: NodeParams, watcher: ActorRef, router: ActorRef, r
       val remoteNodeId = connections.find(_._2 == actor).get._1
       context become main(peers, connections - remoteNodeId)
 
+    case Terminated(actor) if peers.values.toSet.contains(actor) =>
+      log.info(s"$actor is dead, removing from peers/connections/db")
+      val remoteNodeId = peers.find(_._2 == actor).get._1
+      nodeParams.peersDb.delete(remoteNodeId)
+      context become main(peers - remoteNodeId, connections - remoteNodeId)
+
     case h@HandshakeCompleted(_, remoteNodeId) =>
-      val peer = peers.getOrElse(remoteNodeId, createPeer(remoteNodeId, None))
+      val peer = createOrGetPeer(peers, remoteNodeId, None)
       peer forward h
       context become main(peers + (remoteNodeId -> peer), connections)
 
@@ -74,9 +71,14 @@ class Switchboard(nodeParams: NodeParams, watcher: ActorRef, router: ActorRef, r
 
   }
 
-  def createPeer(remoteNodeId: PublicKey, address_opt: Option[InetSocketAddress]) = {
-    peerDb.put(remoteNodeId, PeerRecord(remoteNodeId, address_opt))
-    context.actorOf(Peer.props(nodeParams, remoteNodeId, address_opt, watcher, router, relayer, defaultFinalScriptPubKey), name = s"peer-$remoteNodeId")
+  def createOrGetPeer(peers: Map[PublicKey, ActorRef], remoteNodeId: PublicKey, address_opt: Option[InetSocketAddress]) = {
+    peers.get(remoteNodeId) match {
+      case Some(peer) => peer
+      case None =>
+        val peer = context.actorOf(Peer.props(nodeParams, remoteNodeId, address_opt, watcher, router, relayer, defaultFinalScriptPubKey), name = s"peer-$remoteNodeId")
+        context watch (peer)
+        peer
+    }
   }
 }
 
